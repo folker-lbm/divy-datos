@@ -21,6 +21,10 @@ on:
         description: 'generar aunque la previsión publicada sea reciente'
         type: boolean
         default: false
+      pruebas:
+        description: 'solo en pruebas (divy-staging): lee de allí los spots, p. ej. con el catálogo mundial, y publica solo allí'
+        type: boolean
+        default: false
 
 # Nunca dos ejecuciones a la vez: la de Open-Meteo depende de la parte de Copernicus de la última completa.
 concurrency:
@@ -52,7 +56,7 @@ jobs:
           DIVY_FORECAST_TOKEN: ${{ secrets.DIVY_FORECAST_TOKEN }}
           EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
           EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
-        run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" ${{ inputs.forzar && '--forzar' || '' }} --publicar https://joindivy.com https://divy-staging.divy-api.workers.dev
+        run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
       - name: Avisos del proceso
         if: always()
         run: python -I -c "import json; d=json.load(open('salida/prevision.json')); print('Avisos:', d['warnings'] or 'ninguno')" || true
