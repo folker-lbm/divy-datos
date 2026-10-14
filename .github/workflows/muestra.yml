@@ -1,0 +1,37 @@
+# Prueba del proceso global con la muestra mundial (plan del 14 oct, fase A): lee «spots-muestra» de la API de pruebas,
+# genera la previsión completa por regiones y la deja como artefacto, con un resumen de cobertura y tiempo. No publica
+# nada: la app no se entera.
+name: Muestra
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: muestra
+  cancel-in-progress: true
+
+jobs:
+  muestra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Generar sin publicar
+        env:
+          COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUSMARINE_SERVICE_USERNAME }}
+          COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUSMARINE_SERVICE_PASSWORD }}
+          DIVY_FORECAST_TOKEN: ${{ secrets.DIVY_FORECAST_TOKEN }}
+          EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+          EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+        run: python -I pipeline.py --muestra https://divy-staging.divy-api.workers.dev
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: muestra
+          path: salida/

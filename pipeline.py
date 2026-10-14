@@ -3,8 +3,13 @@ Proceso de datos de Divy: genera la previsión real por spot para la app.
 
 Fuentes (ver INVESTIGACION-DATOS.md):
   · Oleaje y viento hora a hora: Open-Meteo (Marine DWD/MFWAM y Forecast), por spot.
-  · Perfil de temperatura por profundidad (diario): Copernicus MEDSEA 3D en el Mediterráneo, IBI 3D en el Atlántico.
-  · Corriente a ~10 m (horaria): Copernicus IBI en toda España y MEDSEA en el Mediterráneo, en la celda de mar más cercana.
+  · Perfil de temperatura por profundidad (diario): Copernicus MEDSEA 3D en el Mediterráneo, IBI 3D en el Atlántico
+    ibérico y el GLOBAL (1/12°) en el resto del mundo.
+  · Corriente a ~10 m (horaria): Copernicus IBI en toda España y MEDSEA en el Mediterráneo; fuera, el GLOBAL (cada 6 h,
+    interpolado a horas). En la celda de mar más cercana.
+  · Viento: ICON-EU en Europa; fuera, ECMWF Open Data (viento.py).
+Catálogo mundial (14 oct): cada spot tiene una región de previsión y la salida se publica por regiones («actual-<región>»;
+España sigue en «actual»). Con --muestra se prueba con la muestra mundial de la API sin publicar nada.
   · Avisos oficiales: AEMET (CAP con contornos), en cada ejecución (avisos.py).
   · Boyas: Copernicus In Situ global, la más cercana a cada spot (boyas.py), en cada ejecución.
   · Turbidez Kd490 por satélite (diaria, días nublados = sin dato), alrededor de cada spot: Copernicus OLCI 300 m en el
@@ -47,6 +52,10 @@ SAT_BOX = (0.09, 0.11)
 HR_BOX = (0.009, 0.011)
 WAVE_MAX_KM = 10  # celda de mar del modelo de oleaje como mucho a 10 km; si no, Open-Meteo para ese spot  # ~1 km alrededor del spot para la turbidez de 100 m  # medio lado (lat, lon) de la zona de satélite alrededor de cada spot (~20 km, como en el backtest)
 warnings: list[str] = []
+# Región de previsión de cada spot (catálogo mundial, 14 oct): la app descarga solo la región que mira. Los spots sin
+# región (todo el catálogo de España de hoy) son «es», que también se publica como «actual» para la app anterior.
+REGION: dict[str, str] = {}
+GLOBAL_ZONE = 3.0  # lado (°) de las zonas de los modelos globales (rejilla de 9 km): menos peticiones que con 1°
 
 
 def spots_from_catalog(api=None):
@@ -55,7 +64,7 @@ def spots_from_catalog(api=None):
     if not CATALOG.exists():
         if not api:
             sys.exit('Sin el catálogo de la app: indica --publicar para leer los spots de la API de Divy')
-        return {s['id']: (s['lat'], s['lng']) for s in json.loads(api_request(api, 'spots'))['spots']}
+        return from_list(json.loads(api_request(api, 'spots'))['spots'])
     src = CATALOG.read_text()
     found = re.findall(r"id: '([a-z0-9-]+)',(?:(?!id: ').)*?coord: \{ lat: ([-\d.]+), lng: ([-\d.]+) \}", src, flags=re.S)
     spots = {sid: (float(la), float(lo)) for sid, la, lo in found}
@@ -66,27 +75,53 @@ def spots_from_catalog(api=None):
     return spots
 
 
+def from_list(items):
+    """Spots de una lista de la API ({id, lat, lng, region?}); guarda su región en REGION."""
+    for s in items:
+        REGION[s['id']] = s.get('region') or 'es'
+    return {s['id']: (s['lat'], s['lng']) for s in items}
+
+
+def region_of(sid):
+    return REGION.get(sid, 'es')
+
+
+IBI_BOX = (26.0, 56.0, -19.0, 5.0)  # lat mín, lat máx, lon mín, lon máx del modelo IBI (incluye Canarias)
+
+
+def kind(pos):
+    """Modelo físico de la zona: MEDSEA (Mediterráneo), IBI (Atlántico ibérico y Canarias) o el global (resto)."""
+    if is_med(pos):
+        return 'med'
+    if IBI_BOX[0] <= pos[0] <= IBI_BOX[1] and IBI_BOX[2] <= pos[1] <= IBI_BOX[3]:
+        return 'ibi'
+    return 'glo'
+
+
 def is_med(pos):
     """Mediterráneo (MEDSEA y satélite MED): al este del Estrecho, sin Canarias ni el Cantábrico."""
     return pos[1] > -5.4 and 35 < pos[0] < 42.6
 
 
 def zones(spots, size=1.0):
-    """Agrupa spots cercanos (caja de `size` grados como mucho) para descargar Copernicus por zonas."""
+    """Agrupa spots cercanos para descargar Copernicus por zonas: cajas de `size` grados con los modelos regionales y de
+    GLOBAL_ZONE con el global (sus celdas son más grandes). Cada zona es de un solo modelo (`kind`)."""
     out = []
     for sid, (la, lo) in sorted(spots.items(), key=lambda kv: (kv[1][1], kv[1][0])):
+        k = kind((la, lo))
+        lim = GLOBAL_ZONE if k == 'glo' else size
         for z in out:
             b = z['box']
             nb = (min(b[0], la), max(b[1], la), min(b[2], lo), max(b[3], lo))
-            if nb[1] - nb[0] <= size and nb[3] - nb[2] <= size and is_med(spots[z['ids'][0]]) == is_med((la, lo)):
+            if nb[1] - nb[0] <= lim and nb[3] - nb[2] <= lim and z['kind'] == k:
                 z['box'], z['ids'] = nb, z['ids'] + [sid]
                 break
         else:
-            out.append({'box': (la, la, lo, lo), 'ids': [sid]})
+            out.append({'box': (la, la, lo, lo), 'ids': [sid], 'kind': k})
     for z in out:
         b = z['box']
         z['bounds'] = dict(minimum_latitude=b[0] - PAD, maximum_latitude=b[1] + PAD, minimum_longitude=b[2] - PAD, maximum_longitude=b[3] + PAD)
-        z['med'] = is_med(spots[z['ids'][0]])
+        z['med'] = z['kind'] == 'med'
     return out
 
 
@@ -119,6 +154,8 @@ OM_BATCH = 100  # spots por petición a Open-Meteo (una URL con 500 coordenadas 
 # Plan gratuito de Open-Meteo: 600 llamadas/min, 5.000/h y 10.000/día, y cada coordenada cuenta como una llamada. Un lote
 # de 100 spots en dos APIs son ~200: se espera entre lotes para quedar por debajo de 600/min.
 OM_PAUSE_S = 25
+# Spots que se pueden pedir a Open-Meteo en cada ejecución (10.000 llamadas/día entre 8 ejecuciones, con margen).
+OM_MAX_PER_RUN = 1100
 
 
 def open_meteo(spots, start, end, marine_for=None, wind_for=None):
@@ -211,7 +248,9 @@ def copernicus(spots, start, end, direct=False):
     zs = zones(spots)
     print(f'{len(spots)} spots en {len(zs)} zonas')
 
-    def each_zone(label, ds_id, only_med, fn, **kw):
+    def each_zone(label, ds_id, kinds, fn, **kw):
+        """Descarga `ds_id` en las zonas cuyo modelo está en `kinds` ({'med', 'ibi', 'glo'}; None = todas; o una
+        función que recibe la zona)."""
         # Las zonas se leen en paralelo (son descargas): la lectura directa tardaba 75 min de una en una (14 oct).
         from concurrent.futures import ThreadPoolExecutor
 
@@ -224,15 +263,22 @@ def copernicus(spots, start, end, direct=False):
             except Exception as e:  # noqa: BLE001
                 warnings.append(f'Copernicus {label} (zona {n + 1}: {", ".join(z["ids"][:2])}…): {type(e).__name__} {str(e)[:160]}')
 
-        todo = [(n, z) for n, z in enumerate(zs) if only_med is None or z['med'] == only_med]
+        ok = kinds if callable(kinds) else (lambda z: kinds is None or z['kind'] in kinds)
+        todo = [(n, z) for n, z in enumerate(zs) if ok(z)]
+        if not todo:
+            return
         with ThreadPoolExecutor(max_workers=6) as pool:
             list(pool.map(lambda a: one(*a), todo))
         print('  ·', label)
 
-    # Corriente horaria a ~10 m: IBI en todas partes, MEDSEA en el Mediterráneo.
+    # Corriente horaria a ~10 m: IBI en todas partes, MEDSEA en el Mediterráneo. Fuera, el global (cada 6 h, que se
+    # reparte hora a hora interpolando u y v).
     def currents(tag):
         def fn(ds, z):
             u, v = ds.uo.isel(depth=0).load(), ds.vo.isel(depth=0).load()
+            if tag == 'glo':
+                hourly = np.arange(u.time.values[0], u.time.values[-1] + np.timedelta64(1, 'h'), np.timedelta64(1, 'h'))
+                u, v = u.interp(time=hourly), v.interp(time=hourly)
             sp = np.hypot(u, v) * 3.6  # km/h
             # Dirección hacia la que va la corriente (grados desde el norte, como en la brújula de la app).
             dr = (np.degrees(np.arctan2(u, v)) + 360) % 360
@@ -249,8 +295,9 @@ def copernicus(spots, start, end, direct=False):
         return fn
 
     cur = dict(variables=['uo', 'vo'], start_datetime=t0, end_datetime=t1, minimum_depth=8, maximum_depth=12)
-    each_zone('corrientes med', 'cmems_mod_med_phy-cur_anfc_4.2km-3D_PT1H-m', True, currents('med'), **cur)
-    each_zone('corrientes ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_PT1H-m', None, currents('ibi'), **cur)
+    each_zone('corrientes med', 'cmems_mod_med_phy-cur_anfc_4.2km-3D_PT1H-m', {'med'}, currents('med'), **cur)
+    each_zone('corrientes ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_PT1H-m', {'med', 'ibi'}, currents('ibi'), **cur)
+    each_zone('corrientes global', 'cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i', {'glo'}, currents('glo'), **cur)
 
     # Oleaje horario (14 oct, Luka: sin límite de llamadas y de la misma fuente oficial): MEDSEA (4,2 km) en el
     # Mediterráneo, IBI (2,8 km, también Canarias) y el global (9 km, cada 3 h) para lo que quede fuera.
@@ -268,10 +315,10 @@ def copernicus(spots, start, end, direct=False):
         return fn
 
     wav = dict(variables=['VHM0', 'VMDR', 'VTPK'], start_datetime=t0, end_datetime=t1)
-    each_zone('oleaje med', 'cmems_mod_med_wav_anfc_4.2km_PT1H-i', True, waves('med'), **wav)
-    each_zone('oleaje ibi', 'cmems_mod_ibi_wav_anfc_0.027deg_PT1H-i', None, waves('ibi'), **wav)
-    if any(not v['waves'] for v in res.values()):
-        each_zone('oleaje global', 'cmems_mod_glo_wav_anfc_0.083deg_PT3H-i', None, waves('glo'), **wav)
+    each_zone('oleaje med', 'cmems_mod_med_wav_anfc_4.2km_PT1H-i', {'med'}, waves('med'), **wav)
+    each_zone('oleaje ibi', 'cmems_mod_ibi_wav_anfc_0.027deg_PT1H-i', {'med', 'ibi'}, waves('ibi'), **wav)
+    # El global, solo en las zonas con algún spot aún sin oleaje (fuera de MEDSEA/IBI, o lejos de su costa).
+    each_zone('oleaje global', 'cmems_mod_glo_wav_anfc_0.083deg_PT3H-i', lambda z: any(not res[sid]['waves'] for sid in z['ids']), waves('glo'), **wav)
 
     # Perfil diario de temperatura hasta 60 m: MEDSEA en el Mediterráneo, IBI en el Atlántico.
     def profiles(ds, z):
@@ -288,8 +335,9 @@ def copernicus(spots, start, end, direct=False):
                 res[sid]['profiles'].append({'date': str(t)[:10], 'levels': levels})
 
     tem = dict(variables=['thetao'], start_datetime=t0, end_datetime=t1, minimum_depth=0, maximum_depth=60)
-    each_zone('temperatura med', 'cmems_mod_med_phy-tem_anfc_4.2km_P1D-m', True, profiles, **tem)
-    each_zone('temperatura ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_P1D-m', False, profiles, **tem)
+    each_zone('temperatura med', 'cmems_mod_med_phy-tem_anfc_4.2km_P1D-m', {'med'}, profiles, **tem)
+    each_zone('temperatura ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_P1D-m', {'ibi'}, profiles, **tem)
+    each_zone('temperatura global', 'cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m', {'glo'}, profiles, **tem)
 
     # Satélite: mediana de Kd490 alrededor de cada spot por día (al menos el 20 % de la zona sin nubes).
     def satellite(ds, z):
@@ -321,12 +369,13 @@ def copernicus(spots, start, end, direct=False):
                     res[sid]['hr'].append({'date': str(t)[:10], 'tur': clean(np.nanmedian(vals), 2), 'validFraction': round(valid, 2)})
 
     hr_kw = dict(variables=['TUR'], start_datetime=s0, end_datetime=t1)
-    each_zone('turbidez HR med', 'cmems_obs_oc_med_bgc_tur-spm-chl_nrt_l3-hr-mosaic_P1D-m', True, turbidity_hr, **hr_kw)
-    each_zone('turbidez HR ibi', 'cmems_obs_oc_ibi_bgc_tur-spm-chl_nrt_l3-hr-mosaic_P1D-m', False, turbidity_hr, **hr_kw)
+    each_zone('turbidez HR med', 'cmems_obs_oc_med_bgc_tur-spm-chl_nrt_l3-hr-mosaic_P1D-m', {'med'}, turbidity_hr, **hr_kw)
+    each_zone('turbidez HR ibi', 'cmems_obs_oc_ibi_bgc_tur-spm-chl_nrt_l3-hr-mosaic_P1D-m', {'ibi'}, turbidity_hr, **hr_kw)
 
     sat = dict(variables=['KD490'], start_datetime=s0, end_datetime=t1)
-    each_zone('satélite med', 'cmems_obs-oc_med_bgc-transp_nrt_l3-olci-300m_P1D', True, satellite, **sat)
-    each_zone('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', False, satellite, **sat)
+    each_zone('satélite med', 'cmems_obs-oc_med_bgc-transp_nrt_l3-olci-300m_P1D', {'med'}, satellite, **sat)
+    each_zone('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', {'ibi'}, satellite, **sat)
+    each_zone('satélite global', 'cmems_obs-oc_glo_bgc-transp_nrt_l3-multi-4km_P1D', {'glo'}, satellite, **sat)
     return res
 
 
@@ -336,10 +385,10 @@ def iso(t):
 
 SOURCES = {
     'oleaje': 'Copernicus Marine MEDSEA_ANALYSISFORECAST_WAV_006_017, IBI_ANALYSISFORECAST_WAV_005_005 y GLOBAL_ANALYSISFORECAST_WAV_001_027; respaldo: Open-Meteo Marine',
-    'viento': 'DWD ICON-EU (Europa, ~7 km); fuera de Europa: Open-Meteo Forecast y, si falla, ECMWF Open Data (IFS 0,25°)',
-    'temperatura': 'Copernicus Marine MEDSEA_ANALYSISFORECAST_PHY_006_013 (Mediterráneo) e IBI_ANALYSISFORECAST_PHY_005_001 (Atlántico)',
-    'corriente': 'Copernicus Marine MEDSEA e IBI_ANALYSISFORECAST_PHY_005_001 (~10 m); respaldo: Open-Meteo Marine (superficie)',
-    'satélite': 'Copernicus Marine OCEANCOLOUR_MED_BGC_L3_NRT_009_141 (OLCI 300 m) y OCEANCOLOUR_ATL_BGC_L3_NRT_009_111 (multisensor 1 km)',
+    'viento': 'DWD ICON-EU (Europa, ~7 km); fuera de Europa: ECMWF Open Data (IFS 0,25°); Canarias y huecos: Open-Meteo Forecast',
+    'temperatura': 'Copernicus Marine MEDSEA_ANALYSISFORECAST_PHY_006_013 (Mediterráneo), IBI_ANALYSISFORECAST_PHY_005_001 (Atlántico ibérico) y GLOBAL_ANALYSISFORECAST_PHY_001_024 (resto del mundo, 1/12°)',
+    'corriente': 'Copernicus Marine MEDSEA, IBI_ANALYSISFORECAST_PHY_005_001 y GLOBAL_ANALYSISFORECAST_PHY_001_024 (~10 m; el global, cada 6 h interpolado); respaldo: Open-Meteo Marine (superficie)',
+    'satélite': 'Copernicus Marine OCEANCOLOUR_MED_BGC_L3_NRT_009_141 (OLCI 300 m), OCEANCOLOUR_ATL_BGC_L3_NRT_009_111 (multisensor 1 km) y OCEANCOLOUR_GLO_BGC_L3_NRT_009_101 (multisensor 4 km, resto del mundo)',
     'satéliteHR': 'Copernicus Marine OCEANCOLOUR_MED/IBI_BGC_HR_L3_NRT_009_205/204 (Sentinel-2, 100 m)',
     'satéliteGlobal': 'NASA PACE OCI PACE_OCI_L3M_KD_NRT (4 km)',
     'avisos': 'AEMET (CAP, Plan Meteoalerta)',
@@ -349,7 +398,7 @@ SOURCES = {
 
 # Columnas por spot, alineadas al eje horario común (window.from + i horas). Formato v4: unas 7 veces más pequeño que
 # un objeto por hora, que con 500 spots no se podía descargar al abrir la app.
-COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cDir', 'cOm', 'sst')
+COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cGlo', 'cDir', 'cOm', 'sst')
 
 
 # Visibilidad estimada (m) a partir de cada medida. Provisional: se calibra con los reportes (backtest, REGLAS v0.5).
@@ -411,9 +460,9 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
             if best:
                 row.update(hs=best[0], dir=best[1], tp=best[2])
             cur = c.get('currents', {}).get(t, {})
-            # Dirección: la del modelo regional más fino disponible (MEDSEA en el Mediterráneo, si no IBI).
-            c_dir = cur.get('medDir') if cur.get('med') is not None else cur.get('ibiDir') if cur.get('ibi') is not None else row.get('cOmDir')
-            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cDir': c_dir}
+            # Dirección: la del modelo más fino disponible (MEDSEA en el Mediterráneo, si no IBI, si no el global).
+            c_dir = next((cur.get(k + 'Dir') for k in ('med', 'ibi', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
+            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cGlo': cur.get('glo'), 'cDir': c_dir}
             for k in COLUMNS:
                 cols[k].append(vals.get(k))
         out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
@@ -431,6 +480,32 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
         'warnings': warnings + [w for w in cop.get('warnings', []) if w not in warnings],
         'spots': out_spots,
     }
+
+
+def out_name(region):
+    """Archivo de salida de una región (España conserva el nombre de siempre)."""
+    return 'prevision.json' if region == 'es' else f'prevision-{region}.json'
+
+
+def summary(snapshots, seconds):
+    """Cobertura por región de la prueba con la muestra: porcentaje de spots con cada dato y tamaño de la salida."""
+    out = {'minutos': round(seconds / 60, 1), 'regiones': {}}
+    for r, snap in snapshots.items():
+        ss = list(snap['spots'].values())
+        n = len(ss) or 1
+        has = lambda f: round(100 * sum(1 for s in ss if f(s)) / n)  # noqa: E731
+        size = len(json.dumps(snap, ensure_ascii=False, separators=(',', ':')).encode())
+        out['regiones'][r] = {
+            'spots': len(ss),
+            'oleaje %': has(lambda s: any(v is not None for v in s['hs'])),
+            'viento %': has(lambda s: any(v is not None for v in s['wind'])),
+            'corriente %': has(lambda s: any(v is not None for k in ('cMed', 'cIbi', 'cGlo') for v in s[k])),
+            'temperatura %': has(lambda s: bool(s['profiles'])),
+            'visibilidad %': has(lambda s: bool(s['clarity'])),
+            'KB': size // 1024,
+        }
+    out['avisos'] = warnings[:40]
+    return out
 
 
 def api_request(base, key, method='GET', body=None):
@@ -459,7 +534,10 @@ def main():
     ap.add_argument('--publicar', nargs='*', default=[], metavar='URL', help='API de Divy donde publicar (p. ej. https://joindivy.com)')
     ap.add_argument('--forzar', action='store_true', help='generar aunque la previsión publicada sea reciente')
     ap.add_argument('--subir-spots', nargs='+', metavar='URL', help='solo subir la lista de spots del catálogo a la API (repositorio de la app)')
+    ap.add_argument('--muestra', metavar='URL', help='probar con la muestra mundial de la API («spots-muestra»): genera y mide, sin publicar nada')
     args = ap.parse_args()
+    import time
+    t_start = time.time()
 
     if args.subir_spots:
         cat = [{'id': k, 'lat': v[0], 'lng': v[1]} for k, v in spots_from_catalog().items()]
@@ -468,7 +546,13 @@ def main():
             api_request(base, 'spots', 'PUT', body)
             print(f'  · {len(body) // 1024} KB de spots subidos a {base}')
         return
-    spots = spots_from_catalog(args.publicar[0] if args.publicar else None)
+    if args.muestra:
+        spots = from_list(json.loads(api_request(args.muestra, 'spots-muestra'))['spots'])
+        args.publicar, args.modo = [], 'completo'
+    else:
+        spots = spots_from_catalog(args.publicar[0] if args.publicar else None)
+    regions = sorted({region_of(sid) for sid in spots})
+    print(f'{len(spots)} spots en {len(regions)} regiones: {", ".join(regions)}')
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     # Sin duplicados: lo pueden lanzar el temporizador del Worker y el de GitHub. Si la previsión publicada ya es de esta
     # misma franja, no se repite (ahorra llamadas a Open-Meteo y a Copernicus).
@@ -489,12 +573,27 @@ def main():
     cop_file = OUT_DIR / 'copernicus.json'
 
     def previous_cop():
-        """Última parte de Copernicus publicada (API en GitHub Actions; en local, la del último modo completo)."""
+        """Última parte de Copernicus publicada, juntando la de cada región (API en GitHub Actions; en local, la del
+        último modo completo). España también puede estar aún en la clave antigua «copernicus»."""
         try:
-            if args.publicar:
-                return json.loads(api_request(args.publicar[0], 'copernicus'))
-            if cop_file.exists():
-                return json.loads(cop_file.read_text())
+            if not args.publicar:
+                return json.loads(cop_file.read_text()) if cop_file.exists() else None
+            out = None
+            for r in regions:
+                part = None
+                for key in (f'copernicus-{r}', 'copernicus') if r == 'es' else (f'copernicus-{r}',):
+                    try:
+                        part = json.loads(api_request(args.publicar[0], key))
+                        break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if part is None:
+                    warnings.append(f'Sin parte de Copernicus anterior de la región {r}')
+                    continue
+                if out is None:
+                    out = {'generatedAt': part.get('generatedAt'), 'warnings': [], 'spots': {}}
+                out['spots'].update(part.get('spots', {}))
+            return out
         except Exception as e:  # noqa: BLE001
             warnings.append(f'Sin parte de Copernicus anterior ({e})')
         return None
@@ -502,22 +601,27 @@ def main():
     def previous_wind():
         """Viento de las horas pasadas de la última previsión publicada (ICON-EU y ECMWF solo dan horas futuras)."""
         try:
-            if args.publicar:
-                req = urllib.request.Request(f'{args.publicar[0].rstrip("/")}/api/prevision', headers={'User-Agent': 'divy-pipeline'})
-                pub = json.loads(urllib.request.urlopen(req, timeout=60).read())
-            elif (OUT_DIR / 'prevision.json').exists():
-                pub = json.loads((OUT_DIR / 'prevision.json').read_text())
-            else:
-                return {}
-            t0 = datetime.fromisoformat(pub['window']['from'].replace('Z', '+00:00'))
+            pubs = []
+            for r in regions:
+                try:
+                    if args.publicar:
+                        path = '/api/prevision' if r == 'es' else f'/api/prevision/{r}'
+                        req = urllib.request.Request(f'{args.publicar[0].rstrip("/")}{path}', headers={'User-Agent': 'divy-pipeline'})
+                        pubs.append(json.loads(urllib.request.urlopen(req, timeout=60).read()))
+                    elif (OUT_DIR / out_name(r)).exists():
+                        pubs.append(json.loads((OUT_DIR / out_name(r)).read_text()))
+                except Exception:  # noqa: BLE001
+                    continue  # región nueva: aún sin previsión anterior
             out = {}
-            for sid, s in pub.get('spots', {}).items():
-                rows = {}
-                for i, v in enumerate(s.get('wind', [])):
-                    t = t0 + timedelta(hours=i)
-                    if v is not None and t < now:
-                        rows[t.strftime('%Y-%m-%dT%H:00')] = {'wind': v, 'gust': s['gust'][i], 'wdir': s['wdir'][i]}
-                out[sid] = rows
+            for pub in pubs:
+                t0 = datetime.fromisoformat(pub['window']['from'].replace('Z', '+00:00'))
+                for sid, s in pub.get('spots', {}).items():
+                    rows = {}
+                    for i, v in enumerate(s.get('wind', [])):
+                        t = t0 + timedelta(hours=i)
+                        if v is not None and t < now:
+                            rows[t.strftime('%Y-%m-%dT%H:00')] = {'wind': v, 'gust': s['gust'][i], 'wdir': s['wdir'][i]}
+                    out[sid] = rows
             return out
         except Exception as e:  # noqa: BLE001
             warnings.append(f'Sin viento anterior para las horas pasadas ({str(e)[:80]})')
@@ -551,14 +655,7 @@ def main():
             cop_file.write_text(json.dumps(cop, ensure_ascii=False, separators=(',', ':')))
     else:
         # Última parte de Copernicus: de la API (en GitHub Actions) o, en local, del último modo completo.
-        cop = None
-        try:
-            if args.publicar:
-                cop = json.loads(api_request(args.publicar[0], 'copernicus'))
-            elif cop_file.exists():
-                cop = json.loads(cop_file.read_text())
-        except Exception as e:  # noqa: BLE001
-            warnings.append(f'Sin parte de Copernicus ({e}): solo oleaje y viento')
+        cop = previous_cop()
         if cop is None:
             # Sin modo completo previo: se publica oleaje y viento; temperatura, corriente y satélite quedan «sin datos».
             cop = {'generatedAt': None, 'warnings': [], 'spots': {}}
@@ -569,13 +666,27 @@ def main():
     # La API marina de Open-Meteo solo para los spots sin oleaje o sin corriente regional de Copernicus (14 oct).
     cs = cop.get('spots', {})
     marine_for = {sid for sid in spots if not cs.get(sid, {}).get('waves') or not cs.get(sid, {}).get('currents')}
-    print(f'Open-Meteo Marine para {len(marine_for)} de {len(spots)} spots')
     sys.path.insert(0, str(Path(__file__).resolve().parent))  # con -I, la carpeta del script no está en el path
-    # Viento por modelos descargados enteros (viento.py, 14 oct): ICON-EU en Europa; Open-Meteo solo para el resto.
+    # Viento por modelos descargados enteros (viento.py): ICON-EU en Europa y, fuera, ECMWF (global, sin límite de
+    # llamadas; catálogo mundial, 14 oct). Open-Meteo, más fino que ECMWF, solo para España fuera de ICON-EU (Canarias)
+    # y los huecos.
     from viento import ecmwf, icon_eu
     wind = icon_eu(spots, now, end, warnings)
+    world = {sid: spots[sid] for sid in spots if not wind.get(sid) and region_of(sid) != 'es'}
+    if world:
+        wind.update(ecmwf(world, now, end, warnings))
+        print(f'ECMWF: viento para {sum(1 for sid in world if wind.get(sid))} de {len(world)} spots fuera de Europa')
     wind_for = {sid for sid in spots if not wind.get(sid)}
-    print(f'Open-Meteo Forecast para {len(wind_for)} de {len(spots)} spots')
+    # Plan gratuito de Open-Meteo: 10.000 llamadas al día y 8 ejecuciones diarias. Si Copernicus o ECMWF fallan en todo
+    # el mundo, no se puede pedir todo a Open-Meteo: primero España y, del resto, hasta completar el cupo.
+    cupo = OM_MAX_PER_RUN - len(marine_for & {s for s in spots if region_of(s) == 'es'}) - len(wind_for & {s for s in spots if region_of(s) == 'es'})
+    for name, group in (('Marine', marine_for), ('Forecast', wind_for)):
+        rest = sorted(sid for sid in group if region_of(sid) != 'es')
+        if len(rest) > max(0, cupo):
+            group.difference_update(rest[max(0, cupo):])
+            warnings.append(f'Open-Meteo {name}: {len(rest) - max(0, cupo)} spots fuera de España sin respaldo (cupo diario)')
+        cupo -= min(len(rest), max(0, cupo))
+    print(f'Open-Meteo Marine para {len(marine_for)} y Forecast para {len(wind_for)} de {len(spots)} spots')
     om = open_meteo(spots, start, end, marine_for, wind_for)
     no_wind = {sid: spots[sid] for sid in wind_for if not any(r.get('wind') is not None for r in om[sid].values())}
     wind.update(ecmwf(no_wind, now, end, warnings))
@@ -583,18 +694,33 @@ def main():
     alerts = aemet(spots, now, warnings)
     from boyas import buoys  # medidas reales de boyas (FUENTES-DATOS.md, paso 3)
     buoy = buoys(spots, now, warnings) if copernicus_up() else {}
-    snapshot = merge(spots, om, cop, now, start, end, alerts, buoy, wind, previous_wind())
-    out = OUT_DIR / 'prevision.json'
-    out.write_text(json.dumps(snapshot, ensure_ascii=False, separators=(',', ':')))
-    n_hours = sum(sum(v is not None for v in s['hs']) for s in snapshot['spots'].values())
-    print(f'OK {out.relative_to(ROOT)} · {len(spots)} spots · {n_hours} horas · avisos: {snapshot["warnings"] or "ninguno"}')
+    prev_wind = previous_wind()
+    snapshots = {}
+    for r in regions:
+        ids = [sid for sid in spots if region_of(sid) == r]
+        snapshots[r] = merge({sid: spots[sid] for sid in ids}, om, cop, now, start, end, alerts, buoy, wind, prev_wind)
+        snapshots[r]['region'] = r
+        (OUT_DIR / out_name(r)).write_text(json.dumps(snapshots[r], ensure_ascii=False, separators=(',', ':')))
+    n_hours = sum(sum(v is not None for v in s['hs']) for snap in snapshots.values() for s in snap['spots'].values())
+    print(f'OK salida/ · {len(spots)} spots · {n_hours} horas · avisos: {warnings or "ninguno"}')
+    if args.muestra:
+        resumen = summary(snapshots, time.time() - t_start)
+        (OUT_DIR / 'resumen.json').write_text(json.dumps(resumen, ensure_ascii=False, indent=1))
+        print(json.dumps(resumen, ensure_ascii=False, indent=1))
+        return
     # Sin oleaje ni viento la previsión no sirve: no se publica para no tapar la anterior.
     if n_hours == 0:
         sys.exit('Open-Meteo no devolvió horas: no se publica')
     if args.publicar:
         if args.modo == 'completo' and fresh_cop:
-            publish(args.publicar, 'copernicus', cop)
-        publish(args.publicar, 'actual', snapshot)
+            # La parte de Copernicus, por regiones (con el mundo entero no cabría en una sola clave de KV).
+            for r in regions:
+                ids = {sid for sid in spots if region_of(sid) == r}
+                publish(args.publicar, f'copernicus-{r}', {**cop, 'spots': {k: v for k, v in cop['spots'].items() if k in ids}})
+        for r in regions:
+            # España sigue en «actual» (la app anterior la lee de /api/prevision).
+            publish(args.publicar, 'actual' if r == 'es' else f'actual-{r}', snapshots[r])
+    print(f'Tiempo total: {(time.time() - t_start) / 60:.1f} min')
 
 
 if __name__ == '__main__':
