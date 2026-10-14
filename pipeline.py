@@ -44,6 +44,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / 'app/src/data/mock.ts'
 CATALOG_ES = ROOT / 'app/src/data/spots.json'
+CATALOG_WORLD = ROOT / 'herramientas/spots/mundo'  # <región>.json, generados con herramientas/spots/mundo.py
 OUT_DIR = Path(__file__).resolve().parent / 'salida'
 # Horas extra de Copernicus en el modo completo: la previsión de las 6 h siguientes reutiliza esta parte.
 COP_EXTRA_H = 24
@@ -58,7 +59,12 @@ REGION: dict[str, str] = {}
 GLOBAL_ZONE = 3.0  # lado (°) de las zonas de los modelos globales (rejilla de 9 km): menos peticiones que con 1°
 
 
-def spots_from_catalog(api=None):
+def world_catalog():
+    """Catálogo mundial (fuera de España) por regiones: {región: [spots]}."""
+    return {f.stem: json.loads(f.read_text()) for f in sorted(CATALOG_WORLD.glob('*.json'))} if CATALOG_WORLD.exists() else {}
+
+
+def spots_from_catalog(api=None, world=False):
     """Spots y coordenadas desde el catálogo de la app (una sola fuente de verdad). El proceso se ejecuta en un repositorio
     público aparte, sin la app (14 oct): ahí la lista se pide a la API de Divy, donde la sube el repositorio de la app."""
     if not CATALOG.exists():
@@ -72,6 +78,11 @@ def spots_from_catalog(api=None):
         sys.exit('No se encontraron spots con coordenadas en mock.ts')
     for s in json.loads(CATALOG_ES.read_text()):
         spots[s['id']] = (s['coord']['lat'], s['coord']['lng'])
+    if world:
+        for region, items in world_catalog().items():
+            for s in items:
+                spots[s['id']] = (s['coord']['lat'], s['coord']['lng'])
+                REGION[s['id']] = region
     return spots
 
 
@@ -534,17 +545,24 @@ def main():
     ap.add_argument('--publicar', nargs='*', default=[], metavar='URL', help='API de Divy donde publicar (p. ej. https://joindivy.com)')
     ap.add_argument('--forzar', action='store_true', help='generar aunque la previsión publicada sea reciente')
     ap.add_argument('--subir-spots', nargs='+', metavar='URL', help='solo subir la lista de spots del catálogo a la API (repositorio de la app)')
+    ap.add_argument('--con-mundo', action='store_true', help='con --subir-spots: incluir el catálogo mundial y subir sus spots por región')
     ap.add_argument('--muestra', metavar='URL', help='probar con la muestra mundial de la API («spots-muestra»): genera y mide, sin publicar nada')
     args = ap.parse_args()
     import time
     t_start = time.time()
 
     if args.subir_spots:
-        cat = [{'id': k, 'lat': v[0], 'lng': v[1]} for k, v in spots_from_catalog().items()]
-        body = json.dumps({'generatedAt': iso(datetime.now(timezone.utc)), 'spots': cat}).encode()
+        # Con --con-mundo, el proceso también genera la previsión del resto del mundo y la app recibe sus spots por región.
+        cat = [{'id': k, 'lat': v[0], 'lng': v[1], 'region': region_of(k)} for k, v in spots_from_catalog(world=args.con_mundo).items()]
+        stamp = iso(datetime.now(timezone.utc))
+        body = json.dumps({'generatedAt': stamp, 'spots': cat}).encode()
         for base in args.subir_spots:
             api_request(base, 'spots', 'PUT', body)
             print(f'  · {len(body) // 1024} KB de spots subidos a {base}')
+            if args.con_mundo:
+                for region, items in world_catalog().items():
+                    api_request(base, f'catalogo-{region}', 'PUT', json.dumps({'generatedAt': stamp, 'region': region, 'spots': items}, ensure_ascii=False).encode())
+                    print(f'  · catálogo «{region}» ({len(items)} spots) subido a {base}')
         return
     if args.muestra:
         spots = from_list(json.loads(api_request(args.muestra, 'spots-muestra'))['spots'])
