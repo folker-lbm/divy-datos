@@ -110,8 +110,12 @@ def kind(pos):
 
 
 def is_med(pos):
-    """Mediterráneo (MEDSEA y satélite MED): al este del Estrecho, sin Canarias ni el Cantábrico."""
-    return pos[1] > -5.4 and 35 < pos[0] < 42.6
+    """Mediterráneo (MEDSEA y satélite MED): al este del Estrecho y al oeste de Oriente Próximo (36,3° E), sin Canarias,
+    el Cantábrico ni el mar Negro. Antes del catálogo mundial bastaba con la latitud: Japón caía «en el Mediterráneo»."""
+    la, lo = pos
+    if not (-5.4 < lo < 36.3 and 30.2 < la < 45.9):
+        return False
+    return not (la > 40.9 and lo > 26.9)  # mar Negro y mar de Mármara
 
 
 def zones(spots, size=1.0):
@@ -133,6 +137,8 @@ def zones(spots, size=1.0):
         b = z['box']
         z['bounds'] = dict(minimum_latitude=b[0] - PAD, maximum_latitude=b[1] + PAD, minimum_longitude=b[2] - PAD, maximum_longitude=b[3] + PAD)
         z['med'] = z['kind'] == 'med'
+        # ¿Toda la zona dentro de IBI? (en el Mediterráneo, IBI solo llega a Baleares; antes se pedía en todas)
+        z['inIbi'] = all(IBI_BOX[0] <= spots[s][0] <= IBI_BOX[1] and IBI_BOX[2] <= spots[s][1] <= IBI_BOX[3] for s in z['ids'])
     return out
 
 
@@ -246,6 +252,8 @@ def copernicus(spots, start, end, direct=False):
     """Corriente, perfiles y satélite por zonas. `direct`: leer de la nube de Copernicus sin su servidor de acceso (arco.py)."""
     import copernicusmarine as cm
 
+    import xarray as xr
+
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from arco import open_arco
 
@@ -288,8 +296,13 @@ def copernicus(spots, start, end, direct=False):
         def fn(ds, z):
             u, v = ds.uo.isel(depth=0).load(), ds.vo.isel(depth=0).load()
             if tag == 'glo':
+                # Interpolación lineal a horas con numpy (xarray.interp necesita scipy, que no está en el entorno).
+                t_in = u.time.values.astype('datetime64[s]').astype(np.int64)
                 hourly = np.arange(u.time.values[0], u.time.values[-1] + np.timedelta64(1, 'h'), np.timedelta64(1, 'h'))
-                u, v = u.interp(time=hourly), v.interp(time=hourly)
+                t_out = hourly.astype('datetime64[s]').astype(np.int64)
+                lerp = lambda a: np.apply_along_axis(lambda col: np.interp(t_out, t_in, col), 0, a)  # noqa: E731
+                u = xr.DataArray(lerp(u.values), coords={'time': hourly, 'latitude': u.latitude, 'longitude': u.longitude}, dims=('time', 'latitude', 'longitude'))
+                v = xr.DataArray(lerp(v.values), coords={'time': hourly, 'latitude': v.latitude, 'longitude': v.longitude}, dims=('time', 'latitude', 'longitude'))
             sp = np.hypot(u, v) * 3.6  # km/h
             # Dirección hacia la que va la corriente (grados desde el norte, como en la brújula de la app).
             dr = (np.degrees(np.arctan2(u, v)) + 360) % 360
@@ -307,7 +320,7 @@ def copernicus(spots, start, end, direct=False):
 
     cur = dict(variables=['uo', 'vo'], start_datetime=t0, end_datetime=t1, minimum_depth=8, maximum_depth=12)
     each_zone('corrientes med', 'cmems_mod_med_phy-cur_anfc_4.2km-3D_PT1H-m', {'med'}, currents('med'), **cur)
-    each_zone('corrientes ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_PT1H-m', {'med', 'ibi'}, currents('ibi'), **cur)
+    each_zone('corrientes ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_PT1H-m', lambda z: z['inIbi'], currents('ibi'), **cur)
     each_zone('corrientes global', 'cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i', {'glo'}, currents('glo'), **cur)
 
     # Oleaje horario (14 oct, Luka: sin límite de llamadas y de la misma fuente oficial): MEDSEA (4,2 km) en el
@@ -327,7 +340,7 @@ def copernicus(spots, start, end, direct=False):
 
     wav = dict(variables=['VHM0', 'VMDR', 'VTPK'], start_datetime=t0, end_datetime=t1)
     each_zone('oleaje med', 'cmems_mod_med_wav_anfc_4.2km_PT1H-i', {'med'}, waves('med'), **wav)
-    each_zone('oleaje ibi', 'cmems_mod_ibi_wav_anfc_0.027deg_PT1H-i', {'med', 'ibi'}, waves('ibi'), **wav)
+    each_zone('oleaje ibi', 'cmems_mod_ibi_wav_anfc_0.027deg_PT1H-i', lambda z: z['inIbi'], waves('ibi'), **wav)
     # El global, solo en las zonas con algún spot aún sin oleaje (fuera de MEDSEA/IBI, o lejos de su costa).
     each_zone('oleaje global', 'cmems_mod_glo_wav_anfc_0.083deg_PT3H-i', lambda z: any(not res[sid]['waves'] for sid in z['ids']), waves('glo'), **wav)
 
