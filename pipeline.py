@@ -328,6 +328,17 @@ def copernicus(spots, start, end, direct=False):
     def waves(tag):
         def fn(ds, z):
             hs, dr, tp = ds.VHM0.load(), ds.VMDR.load(), ds.VTPK.load()
+            if tag == 'glo':
+                # El global es cada 3 h: se reparte hora a hora (15 oct: sin esto, 2 de cada 3 horas quedaban sin oleaje y
+                # la app daba «sin datos»). Altura y periodo, lineales; la dirección, por sus componentes.
+                t_in = hs.time.values.astype('datetime64[s]').astype(np.int64)
+                hourly = np.arange(hs.time.values[0], hs.time.values[-1] + np.timedelta64(1, 'h'), np.timedelta64(1, 'h'))
+                t_out = hourly.astype('datetime64[s]').astype(np.int64)
+                lerp = lambda a: np.apply_along_axis(lambda col: np.interp(t_out, t_in, col), 0, a)  # noqa: E731
+                like = lambda a: xr.DataArray(a, coords={'time': hourly, 'latitude': hs.latitude, 'longitude': hs.longitude}, dims=('time', 'latitude', 'longitude'))  # noqa: E731
+                rad = np.radians(dr.values)
+                dr = like((np.degrees(np.arctan2(lerp(np.sin(rad)), lerp(np.cos(rad)))) + 360) % 360)
+                hs, tp = like(lerp(hs.values)), like(lerp(tp.values))
             for sid in z['ids']:
                 cell = nearest_sea_cell(hs.isel(time=0), spots[sid])
                 if cell is None or cell[2] > WAVE_MAX_KM:
