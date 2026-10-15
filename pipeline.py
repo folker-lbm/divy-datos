@@ -753,9 +753,9 @@ def main():
         if rest:
             wind.update(ecmwf(rest, now, end, warnings))
         print(f'Viento fuera de Europa: {sum(1 for sid in world if wind.get(sid))} de {len(world)} spots (ICON global; ECMWF para {len(rest)})')
-        # Puerto Rico e Islas Vírgenes: viento WRF de 2 km de CariCOOS (15 oct).
-        from caricoos import caricoos_wind
-        caricoos_wind(world, wind, now, end, warnings)
+        # Viento de modelos locales donde existen: Puerto Rico e Islas Vírgenes, Hawái, Guam y Samoa (15 oct).
+        from viento_local import local_wind
+        local_wind(world, wind, now, end, warnings)
     wind_for = {sid for sid in spots if not wind.get(sid)}
     # Plan gratuito de Open-Meteo: 10.000 llamadas al día y 8 ejecuciones diarias. Si Copernicus o ECMWF fallan en todo
     # el mundo, no se puede pedir todo a Open-Meteo: primero España y, del resto, hasta completar el cupo.

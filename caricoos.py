@@ -1,7 +1,7 @@
 """
 Modelos locales de CariCOOS (Puerto Rico e Islas Vírgenes; FUENTES-GLOBALES.md, paso 5; 15 oct):
   · Oleaje SWAN costero de 100–180 m (Puerto Rico, Islas Vírgenes de EE. UU., Saint Croix), frente a los 9 km del global.
-  · Viento WRF-NMM de 2 km, frente a los 13 km de ICON global. No da rachas: se conservan las de ICON.
+  · El viento WRF-NMM de 2 km está en viento_local.py, con los de PacIOOS.
 Se leen por OPeNDAP del ERDDAP de CariCOOS, sin clave. Licencia: uso y redistribución libres (sin uso legal).
 """
 import math
@@ -10,7 +10,6 @@ import numpy as np
 
 ERDDAP = 'https://dm3.caricoos.org/erddap/griddap/'
 SWAN = ('SWAN_HighRes_PR', 'SWAN_HighRes_USVI', 'SWAN_HighRes_StCroix')
-WRF = 'wrf_nmm_2km_best_agg'
 WIN = 0.02  # ~2 km alrededor del spot para buscar la celda de mar más cercana del SWAN (celdas de ~100 m)
 
 
@@ -63,40 +62,3 @@ def caricoos_waves(spots, res, start, end, nearest_sea_cell, clean, warnings):
                 print(f'  · CariCOOS {name}: oleaje para {n} de {len(ids)} spots')
         except Exception as e:  # noqa: BLE001
             warnings.append(f'CariCOOS {name}: {type(e).__name__} {str(e)[:120]}')
-
-
-def caricoos_wind(spots, wind, now, end, warnings):
-    """Sustituye el viento medio y su dirección por el del WRF de 2 km (las rachas siguen siendo las de ICON)."""
-    import xarray as xr
-
-    try:
-        ds = xr.open_dataset(ERDDAP + WRF)
-        la0, la1 = float(ds.latitude.min()), float(ds.latitude.max())
-        lo0, lo1 = float(ds.longitude.min()), float(ds.longitude.max())
-        ids = [s for s, (la, lo) in spots.items() if la0 <= la <= la1 and lo0 <= lo <= lo1 and wind.get(s)]
-        if not ids:
-            return
-        lats, lons = [spots[s][0] for s in ids], [spots[s][1] for s in ids]
-        sub = ds.sel(time=slice(np.datetime64(now.replace(tzinfo=None)), np.datetime64(end.replace(tzinfo=None))),
-                     latitude=slice(min(lats) - 0.1, max(lats) + 0.1), longitude=slice(min(lons) - 0.1, max(lons) + 0.1))
-        u, v = sub.U10.load(), sub.V10.load()
-        n = 0
-        for sid in ids:
-            la, lo = spots[sid]
-            i = int(np.abs(u.latitude.values - la).argmin())
-            j = int(np.abs(u.longitude.values - lo).argmin())
-            hourly, uu = _hourly(u.time.values, u.values[:, i, j])
-            _, vv = _hourly(v.time.values, v.values[:, i, j])
-            for t, a, b in zip(hourly, uu, vv):
-                key = str(t)[:13] + ':00'
-                row = wind[sid].get(key)
-                if row is None or not np.isfinite(a) or not np.isfinite(b):
-                    continue
-                row['wind'] = round(math.hypot(a, b) * 3.6)
-                row['wdir'] = round((math.degrees(math.atan2(-a, -b)) + 360) % 360)
-                if row.get('gust') is not None:
-                    row['gust'] = max(row['gust'], row['wind'])  # dos modelos: la racha nunca por debajo del viento medio
-            n += 1
-        print(f'  · viento CariCOOS WRF 2 km: {n} spots')
-    except Exception as e:  # noqa: BLE001
-        warnings.append(f'CariCOOS viento: {type(e).__name__} {str(e)[:120]}')
