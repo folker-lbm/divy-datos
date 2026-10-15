@@ -6,10 +6,9 @@
 name: Previsión
 
 on:
-  schedule:
-    # Lo más rápido posible sin pasar los límites gratuitos (Luka, 13 oct: fiabilidad y actualización rápida):
-    - cron: '30 4,13 * * *' # completo (Copernicus + Open-Meteo) dos veces al día: recoge las nuevas salidas y recupera caídas
-    - cron: '20 1,7,10,16,19,22 * * *' # solo Open-Meteo y avisos, cada 3 h (8 ejecuciones/día ≈ 8.300 llamadas de 10.000)
+  # Sin «schedule» (15 oct): lo lanza solo el temporizador del Worker de Divy (api/src/cron.ts), que es puntual y avisa si
+  # falla. Con los dos, las ejecuciones se duplicaban y, con el mundo (la completa tarda ~73 min), se pisaban en la cola.
+  # Horario: completo a las 4:30 y 13:30 UTC; oleaje, viento y avisos a las 1:20, 7:20, 10:20, 16:20, 19:20 y 22:20.
   workflow_dispatch:
     inputs:
       modo:
@@ -47,7 +46,6 @@ jobs:
         id: modo
         run: |
           if [ -n "${{ inputs.modo }}" ]; then echo "modo=${{ inputs.modo }}" >> "$GITHUB_OUTPUT";
-          elif [ "${{ github.event.schedule }}" = "30 4,13 * * *" ]; then echo "modo=completo" >> "$GITHUB_OUTPUT";
           else echo "modo=open-meteo" >> "$GITHUB_OUTPUT"; fi
       - name: Generar y publicar
         env:
