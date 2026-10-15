@@ -8,7 +8,8 @@ name: Previsión
 on:
   # Sin «schedule» (15 oct): lo lanza solo el temporizador del Worker de Divy (api/src/cron.ts), que es puntual y avisa si
   # falla. Con los dos, las ejecuciones se duplicaban y, con el mundo (la completa tarda ~73 min), se pisaban en la cola.
-  # Horario: completo a las 4:30 y 13:30 UTC; oleaje, viento y avisos a las 1:20, 7:20, 10:20, 16:20, 19:20 y 22:20.
+  # Horario (15 oct, según la publicación de cada modelo): completo a las 4:10 y 16:45 UTC; oleaje, viento y avisos a la
+  # 1:00, 7:00, 9:50, 13:00, 19:00 y 21:50.
   workflow_dispatch:
     inputs:
       modo:
