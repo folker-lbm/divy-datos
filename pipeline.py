@@ -644,6 +644,8 @@ def main():
     ap.add_argument('--forzar', action='store_true', help='generar aunque la previsión publicada sea reciente')
     ap.add_argument('--subir-spots', nargs='+', metavar='URL', help='solo subir la lista de spots del catálogo a la API (repositorio de la app)')
     ap.add_argument('--con-mundo', action='store_true', help='con --subir-spots: incluir el catálogo mundial y subir sus spots por región')
+    ap.add_argument('--regiones', nargs='+', metavar='REGION', help='solo estas regiones (trabajos en paralelo de GitHub, 15 oct)')
+    ap.add_argument('--cupo-om', type=int, default=OM_MAX_PER_RUN, help='llamadas de Open-Meteo para spots fuera de España en esta ejecución')
     ap.add_argument('--muestra', metavar='URL', help='probar con la muestra mundial de la API («spots-muestra»): genera y mide, sin publicar nada')
     args = ap.parse_args()
     import time
@@ -668,6 +670,9 @@ def main():
         args.publicar, args.modo = [], 'completo'
     else:
         spots = spots_from_catalog(args.publicar[0] if args.publicar else None)
+    if args.regiones:
+        # Previsión más fresca (15 oct): cada trabajo de GitHub prepara y publica solo su grupo de regiones, a la vez.
+        spots = {sid: pos for sid, pos in spots.items() if region_of(sid) in args.regiones}
     regions = sorted({region_of(sid) for sid in spots})
     print(f'{len(spots)} spots en {len(regions)} regiones: {", ".join(regions)}')
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
@@ -675,7 +680,8 @@ def main():
     # misma franja, no se repite (ahorra llamadas a Open-Meteo y a Copernicus).
     if args.publicar and not args.forzar:
         try:
-            pub = json.loads(urllib.request.urlopen(urllib.request.Request(f'{args.publicar[0].rstrip("/")}/api/prevision', headers={'User-Agent': 'divy-pipeline'}), timeout=60).read())
+            path = '/api/prevision' if 'es' in regions else f'/api/prevision/{regions[0]}'
+            pub = json.loads(urllib.request.urlopen(urllib.request.Request(f'{args.publicar[0].rstrip("/")}{path}', headers={'User-Agent': 'divy-pipeline'}), timeout=60).read())
             gen = datetime.fromisoformat(pub['generatedAt'].replace('Z', '+00:00'))
             cop_at = pub.get('copernicusAt')
             fresh_om = now - gen < timedelta(minutes=100)
@@ -803,7 +809,7 @@ def main():
     wind_for = {sid for sid in spots if not wind.get(sid)}
     # Plan gratuito de Open-Meteo: 10.000 llamadas al día y 8 ejecuciones diarias. Si Copernicus o ECMWF fallan en todo
     # el mundo, no se puede pedir todo a Open-Meteo: primero España y, del resto, hasta completar el cupo.
-    cupo = OM_MAX_PER_RUN - len(marine_for & {s for s in spots if region_of(s) == 'es'}) - len(wind_for & {s for s in spots if region_of(s) == 'es'})
+    cupo = args.cupo_om - len(marine_for & {s for s in spots if region_of(s) == 'es'}) - len(wind_for & {s for s in spots if region_of(s) == 'es'})
     for name, group in (('Marine', marine_for), ('Forecast', wind_for)):
         rest = sorted(sid for sid in group if region_of(sid) != 'es')
         if len(rest) > max(0, cupo):

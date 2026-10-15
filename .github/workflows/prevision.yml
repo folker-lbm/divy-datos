@@ -32,6 +32,19 @@ concurrency:
 
 jobs:
   prevision:
+    # Previsión más fresca (15 oct): seis grupos de regiones a la vez, cada uno prepara y publica solo las suyas
+    # (~80 min → ~20–25). El cupo de Open-Meteo fuera de España se reparte entre los grupos (5 × 200 ≤ 1.100).
+    strategy:
+      fail-fast: false
+      matrix:
+        grupo:
+          - es
+          - med
+          - eu mrojo africa
+          - filipinas sudeste
+          - oceania norteamerica
+          - caribe sudamerica
+    name: prevision (${{ matrix.grupo }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -54,7 +67,7 @@ jobs:
           DIVY_FORECAST_TOKEN: ${{ secrets.DIVY_FORECAST_TOKEN }}
           EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
           EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
-        run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
+        run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" --regiones ${{ matrix.grupo }} --cupo-om 200 ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
       - name: Avisos del proceso
         if: always()
-        run: python -I -c "import json; d=json.load(open('salida/prevision.json')); print('Avisos:', d['warnings'] or 'ninguno')" || true
+        run: python -I -c "import glob, json; [print(f, 'Avisos:', json.load(open(f))['warnings'] or 'ninguno') for f in sorted(glob.glob('salida/prevision*.json'))]" || true
