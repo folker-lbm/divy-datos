@@ -441,7 +441,51 @@ def copernicus(spots, start, end, direct=False):
     each_zone('satélite med', 'cmems_obs-oc_med_bgc-transp_nrt_l3-olci-300m_P1D', {'med'}, satellite, **sat)
     each_zone('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', {'ibi', 'nws'}, satellite, **sat)
     each_zone('satélite global', 'cmems_obs-oc_glo_bgc-transp_nrt_l3-multi-4km_P1D', {'glo', 'bal', 'blk'}, satellite, **sat)
+    # Visibilidad fuera de Europa con OLCI de 300 m (15 oct, FUENTES-GLOBALES.md): clorofila → Kd490 (Morel 2007). En el
+    # Mediterráneo, frente al Kd490 oficial de 300 m, el error medio de visibilidad bajó de 2,0 m (4 km) a 1,4 m. El
+    # producto se abre una vez y se lee una ventana pequeña por spot; los de 4 km quedan de respaldo (va después: gana).
+    olci300(spots, res, s0, t1, warnings)
     return res
+
+
+def olci300(spots, res, start, end, warnings):
+    """Kd490 diario alrededor de cada spot de los modelos globales a partir de la clorofila OLCI de 300 m."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import copernicusmarine as cm
+
+    ids = [sid for sid, pos in spots.items() if kind(pos) in ('glo', 'bal', 'blk')]
+    if not ids:
+        return
+    try:
+        chl = cm.open_dataset(dataset_id='cmems_obs-oc_glo_bgc-plankton_nrt_l3-olci-300m_P1D', variables=['CHL'],
+                              start_datetime=start, end_datetime=end).CHL
+    except Exception as e:  # noqa: BLE001
+        warnings.append(f'OLCI 300 m: {type(e).__name__} {str(e)[:120]}')
+        return
+
+    def one(sid):
+        la, lo = spots[sid]
+        try:
+            box = chl.sel(latitude=slice(la + SAT_BOX[0], la - SAT_BOX[0]), longitude=slice(lo - SAT_BOX[1], lo + SAT_BOX[1]))
+            if box.latitude.size == 0:
+                box = chl.sel(latitude=slice(la - SAT_BOX[0], la + SAT_BOX[0]), longitude=slice(lo - SAT_BOX[1], lo + SAT_BOX[1]))
+            vals = box.load().values
+        except Exception:  # noqa: BLE001
+            return 0
+        n = 0
+        for k, t in enumerate(box.time.values):
+            v = vals[k]
+            valid = float(np.isfinite(v).mean()) if v.size else 0.0
+            if valid >= 0.2:
+                kd = 0.0166 + 0.0773 * float(np.nanmedian(v)) ** 0.6715
+                res[sid]['satellite'].append({'date': str(t)[:10], 'kd': clean(kd, 3), 'validFraction': round(valid, 2)})
+                n += 1
+        return n
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        days = list(pool.map(one, ids))
+    print(f'  · satélite OLCI 300 m: {sum(1 for d in days if d)} de {len(ids)} spots con algún día')
 
 
 def iso(t):
