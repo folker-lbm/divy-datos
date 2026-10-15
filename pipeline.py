@@ -33,7 +33,6 @@ import argparse
 import json
 import math
 import os
-import re
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -42,7 +41,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-CATALOG = ROOT / 'app/src/data/mock.ts'
+CATALOG = ROOT / 'app/src/data/cabo-de-palos.json'  # los 6 de Cabo de Palos revisados a mano (antes en mock.ts)
 CATALOG_ES = ROOT / 'app/src/data/spots.json'
 CATALOG_WORLD = ROOT / 'herramientas/spots/mundo'  # <región>.json, generados con herramientas/spots/mundo.py
 OUT_DIR = Path(__file__).resolve().parent / 'salida'
@@ -59,6 +58,11 @@ REGION: dict[str, str] = {}
 GLOBAL_ZONE = 3.0  # lado (°) de las zonas de los modelos globales (rejilla de 9 km): menos peticiones que con 1°
 
 
+def spain_catalog():
+    """Catálogo de España completo (Cabo de Palos y el resto), como lo tiene la app."""
+    return json.loads(CATALOG.read_text()) + json.loads(CATALOG_ES.read_text())
+
+
 def world_catalog():
     """Catálogo mundial (fuera de España) por regiones: {región: [spots]}."""
     return {f.stem: json.loads(f.read_text()) for f in sorted(CATALOG_WORLD.glob('*.json'))} if CATALOG_WORLD.exists() else {}
@@ -71,12 +75,8 @@ def spots_from_catalog(api=None, world=False):
         if not api:
             sys.exit('Sin el catálogo de la app: indica --publicar para leer los spots de la API de Divy')
         return from_list(json.loads(api_request(api, 'spots'))['spots'])
-    src = CATALOG.read_text()
-    found = re.findall(r"id: '([a-z0-9-]+)',(?:(?!id: ').)*?coord: \{ lat: ([-\d.]+), lng: ([-\d.]+) \}", src, flags=re.S)
-    spots = {sid: (float(la), float(lo)) for sid, la, lo in found}
-    if not spots:
-        sys.exit('No se encontraron spots con coordenadas en mock.ts')
-    for s in json.loads(CATALOG_ES.read_text()):
+    spots = {}
+    for s in spain_catalog():
         spots[s['id']] = (s['coord']['lat'], s['coord']['lng'])
     if world:
         for region, items in world_catalog().items():
@@ -585,7 +585,8 @@ def main():
             api_request(base, 'spots', 'PUT', body)
             print(f'  · {len(body) // 1024} KB de spots subidos a {base}')
             if args.con_mundo:
-                for region, items in world_catalog().items():
+                # Catálogo único (15 oct): también España, para corregirla o ampliarla sin publicar la app.
+                for region, items in [('es', spain_catalog()), *world_catalog().items()]:
                     api_request(base, f'catalogo-{region}', 'PUT', json.dumps({'generatedAt': stamp, 'region': region, 'spots': items}, ensure_ascii=False).encode())
                     print(f'  · catálogo «{region}» ({len(items)} spots) subido a {base}')
         return
