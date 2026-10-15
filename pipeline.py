@@ -287,10 +287,17 @@ def copernicus(spots, start, end, direct=False):
         from concurrent.futures import ThreadPoolExecutor
 
         def one(n, z):
-            if not direct and any('CouldNotConnectToAuthenticationSystem' in w for w in warnings):
-                return  # el acceso ha fallado a mitad: no se reintenta zona por zona
+            # Si el servidor de acceso falla a mitad (15 oct: con los seis grupos en paralelo, uno recibió un rechazo y
+            # se quedó sin temperatura ni satélite), el resto se lee directamente de su nube, sin servidor de acceso.
+            auth_down = not direct and any('CouldNotConnectToAuthenticationSystem' in w for w in warnings)
             try:
-                ds = opener(dataset_id=ds_id, **kw, **z['bounds'])
+                try:
+                    ds = (open_arco if auth_down else opener)(dataset_id=ds_id, **kw, **z['bounds'])
+                except Exception as e:  # noqa: BLE001
+                    if direct or auth_down or 'CouldNotConnectToAuthenticationSystem' not in f'{type(e).__name__} {e}':
+                        raise
+                    warnings.append(f'Copernicus: el servidor de acceso falla ({label}); se sigue con la lectura directa')
+                    ds = open_arco(dataset_id=ds_id, **kw, **z['bounds'])
                 fn(ds, z)
             except Exception as e:  # noqa: BLE001
                 warnings.append(f'Copernicus {label} (zona {n + 1}: {", ".join(z["ids"][:2])}…): {type(e).__name__} {str(e)[:160]}')

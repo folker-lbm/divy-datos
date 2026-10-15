@@ -10,6 +10,7 @@ import numpy as np
 
 ERDDAP = 'https://dm3.caricoos.org/erddap/griddap/'
 SWAN = ('SWAN_HighRes_PR', 'SWAN_HighRes_USVI', 'SWAN_HighRes_StCroix')
+ROUGH = (16.5, 19.5, -68.5, -64)  # Puerto Rico e Islas Vírgenes, para no llamar al servidor sin spots allí
 WIN = 0.02  # ~2 km alrededor del spot para buscar la celda de mar más cercana del SWAN (celdas de ~100 m)
 
 
@@ -26,6 +27,10 @@ def caricoos_waves(spots, res, start, end, nearest_sea_cell, clean, warnings):
     import xarray as xr
 
     t0, t1 = np.datetime64(start.replace(tzinfo=None)), np.datetime64(end.replace(tzinfo=None))
+    from pacioos import near
+
+    if not near(spots, ROUGH):
+        return
     done = set()
     for name in SWAN:
         try:

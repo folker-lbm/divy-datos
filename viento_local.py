@@ -15,11 +15,12 @@ from caricoos import _hourly
 
 PACIOOS = 'https://pae-paha.pacioos.hawaii.edu/erddap/griddap/'
 CARICOOS = 'https://dm3.caricoos.org/erddap/griddap/'
+# Con su zona aproximada (lat0, lat1, lon0, lon1): los grupos sin spots allí no llaman al servidor.
 MODELS = [
-    ('CariCOOS WRF 2 km', CARICOOS + 'wrf_nmm_2km_best_agg', 'U10', 'V10'),
-    ('PacIOOS WRF Hawái', PACIOOS + 'wrf_hi', 'Uwind', 'Vwind'),
-    ('PacIOOS WRF Guam', PACIOOS + 'wrf_guam', 'Uwind', 'Vwind'),
-    ('PacIOOS WRF Samoa', PACIOOS + 'wrf_samoa', 'Uwind', 'Vwind'),
+    ('CariCOOS WRF 2 km', CARICOOS + 'wrf_nmm_2km_best_agg', 'U10', 'V10', (16.5, 19.5, -68.5, -64)),
+    ('PacIOOS WRF Hawái', PACIOOS + 'wrf_hi', 'Uwind', 'Vwind', (15, 26, -164, -150)),
+    ('PacIOOS WRF Guam', PACIOOS + 'wrf_guam', 'Uwind', 'Vwind', (11, 16, 142, 147)),
+    ('PacIOOS WRF Samoa', PACIOOS + 'wrf_samoa', 'Uwind', 'Vwind', (-17, -11, -175, -167)),
 ]
 
 
@@ -27,7 +28,11 @@ def local_wind(spots, wind, now, end, warnings):
     """Mejora `wind` ({spot: {hora: {wind, wdir, gust}}}) con los modelos locales que cubren a cada spot."""
     import xarray as xr
 
-    for label, url, uvar, vvar in MODELS:
+    from pacioos import near
+
+    for label, url, uvar, vvar, rough in MODELS:
+        if not near(spots, rough):
+            continue
         try:
             ds = xr.open_dataset(url)
             la0, la1 = float(ds.latitude.min()), float(ds.latitude.max())

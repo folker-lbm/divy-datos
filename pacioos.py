@@ -10,6 +10,13 @@ import numpy as np
 ERDDAP = 'https://pae-paha.pacioos.hawaii.edu/erddap/griddap/'
 DATASETS = ('roms_hiig', 'roms_marig', 'roms_samoa')
 PAD = 0.2
+# Zona aproximada de cada modelo: con la previsión en paralelo (15 oct), los grupos sin spots allí no llaman al servidor.
+ROUGH = {'roms_hiig': (15, 26, -164, -150), 'roms_marig': (11, 22, 141, 149), 'roms_samoa': (-17, -11, -175, -167)}
+
+
+def near(spots, box):
+    la0, la1, lo0, lo1 = box
+    return any(la0 <= la <= la1 and lo0 <= lo <= lo1 for la, lo in spots.values())
 
 
 def pacioos(spots, res, start, end, nearest_sea_cell, clean, warnings):
@@ -18,6 +25,8 @@ def pacioos(spots, res, start, end, nearest_sea_cell, clean, warnings):
 
     t0, t1 = np.datetime64(start.replace(tzinfo=None)), np.datetime64(end.replace(tzinfo=None))
     for name in DATASETS:
+        if not near(spots, ROUGH[name]):
+            continue
         try:
             ds = xr.open_dataset(ERDDAP + name)
             la0, la1 = float(ds.latitude.min()), float(ds.latitude.max())
