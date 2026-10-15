@@ -3,8 +3,10 @@ Viento por spot sin límite de llamadas (Luka, 14 oct: «escalar al mundo»): mo
 por región. Los modelos se descargan como ficheros (GRIB) enteros: el coste no depende del número de spots.
 
   1. ICON-EU (DWD, servicio meteorológico alemán), ~7 km, cada 3 h, horario hasta 78 h. Europa (29,5–70,5° N).
-  2. Open-Meteo (por spot) para los spots fuera de ICON-EU (p. ej. Canarias): mejor que un global de 28 km.
-  3. ECMWF Open Data (IFS, 0,25°, cada 3 h) si Open-Meteo falla. Global; pasará a 9 km cuando ECMWF lo publique.
+  2. ICON global (DWD), ~13 km, para el resto del mundo (15 oct, homogeneizar el mundo: antes ECMWF a ~25 km). Rejilla
+     de triángulos: cada spot toma la celda más cercana. Pasos cada 3 h, repartidos por horas.
+  3. Open-Meteo (por spot) para España fuera de ICON-EU (Canarias) y los huecos.
+  4. ECMWF Open Data (IFS, 0,25°, cada 3 h) si ICON global falla.
 
 Más regiones (HRRR en EE. UU., HRDPS en Canadá, AROME en Francia…) se añaden aquí cuando se abran spots allí.
 Salida: {spot_id: {'YYYY-MM-DDTHH:00': {'wind': km/h, 'gust': km/h, 'wdir': ° de procedencia}}}.
@@ -125,6 +127,124 @@ def icon_eu(spots, now, end, warnings):
             speed, wdir = _wind(u, v)
             out[sid][key] = {'wind': speed, 'wdir': wdir, 'gust': round(g * 3.6) if g is not None else None}
     print(f'  · viento ICON-EU (pasada {run:%d %H} UTC): {len(out)} spots, {len(steps)} horas')
+    return out
+
+
+ICON_GLOBAL = 'https://opendata.dwd.de/weather/nwp/icon/grib'
+ICON_GLOBAL_STEP = 3  # cada 3 h (horario disponible, pero así se descarga un tercio: ~80 ficheros de 4 MB)
+
+
+def _decode_values(raw):
+    """Valores de un GRIB (un solo campo) en rejilla no regular."""
+    import eccodes
+
+    with tempfile.NamedTemporaryFile(suffix='.grib2') as tmp:
+        tmp.write(raw)
+        tmp.flush()
+        with open(tmp.name, 'rb') as f:
+            h = eccodes.codes_grib_new_from_file(f)
+            try:
+                return eccodes.codes_get_values(h)
+            finally:
+                eccodes.codes_release(h)
+
+
+def _nearest_cells(lat, lon, spots):
+    """Índice de la celda más cercana a cada spot: se agrupan las celdas en casillas de 0,5° y solo se miran las vecinas."""
+    import numpy as np
+
+    cell = 0.5
+    bi = np.floor(lat / cell).astype(np.int64)
+    bj = np.floor(lon / cell).astype(np.int64)
+    key = bi * 10000 + bj
+    order = np.argsort(key)
+    sk = key[order]
+    out = {}
+    for sid, (la, lo) in spots.items():
+        i0, j0 = int(math.floor(la / cell)), int(math.floor(lo / cell))
+        cand = []
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                k = (i0 + di) * 10000 + ((j0 + dj + 360) % 720 - 360)  # la casilla vecina al otro lado de ±180°
+                a, b = np.searchsorted(sk, k), np.searchsorted(sk, k, side='right')
+                cand.extend(order[a:b].tolist())
+        if not cand:
+            continue
+        c = np.array(cand)
+        d = (lat[c] - la) ** 2 + ((lon[c] - lo) * math.cos(math.radians(la))) ** 2
+        out[sid] = int(c[int(np.argmin(d))])
+    return out
+
+
+def icon_global(spots, now, end, warnings):
+    """Viento ICON global (~13 km) del resto del mundo, cada 3 h e interpolado a horas."""
+    if not spots:
+        return {}
+    import numpy as np
+
+    session = requests.Session()
+    t = now.replace(minute=0, second=0, microsecond=0)
+    t -= timedelta(hours=t.hour % 6)
+    run = None
+    for back in range(0, 4):
+        r = t - timedelta(hours=6 * back)
+        url = f'{ICON_GLOBAL}/{r:%H}/u_10m/icon_global_icosahedral_single-level_{r:%Y%m%d%H}_078_U_10M.grib2.bz2'
+        try:
+            if session.head(url, timeout=30).status_code == 200:
+                run = r
+                break
+        except requests.RequestException:
+            continue
+    if run is None:
+        warnings.append('ICON global: no hay ninguna pasada reciente completa')
+        return {}
+
+    def get(path):
+        for attempt in range(3):
+            try:
+                r = session.get(f'{ICON_GLOBAL}/{run:%H}/{path}', timeout=180)
+                r.raise_for_status()
+                return _decode_values(bz2.decompress(r.content))
+            except Exception as e:  # noqa: BLE001
+                if attempt == 2:
+                    warnings.append(f'ICON global {path.split("/")[-1][-40:]}: {str(e)[:80]}')
+                time.sleep(3 * (attempt + 1))
+        return None
+
+    try:
+        lat = get(f'clat/icon_global_icosahedral_time-invariant_{run:%Y%m%d%H}_CLAT.grib2.bz2')
+        lon = get(f'clon/icon_global_icosahedral_time-invariant_{run:%Y%m%d%H}_CLON.grib2.bz2')
+        cells = _nearest_cells(np.asarray(lat), np.asarray(lon), spots)
+    except Exception as e:  # noqa: BLE001
+        warnings.append(f'ICON global: rejilla ({str(e)[:80]})')
+        return {}
+    steps = [s for s in range(0, 79, ICON_GLOBAL_STEP) if run + timedelta(hours=s - ICON_GLOBAL_STEP) <= end]
+    names = {'u_10m': 'U_10M', 'v_10m': 'V_10M', 'vmax_10m': 'VMAX_10M'}
+
+    def fetch(args):
+        var, step = args
+        vals = get(f'{var}/icon_global_icosahedral_single-level_{run:%Y%m%d%H}_{step:03d}_{names[var]}.grib2.bz2')
+        return var, step, None if vals is None else {sid: float(vals[c]) for sid, c in cells.items()}
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        todo = [(v, s) for v in names for s in steps if not (v == 'vmax_10m' and s == 0)]  # sin rachas en la hora 0
+        by = {(v, s): vals for v, s, vals in pool.map(fetch, todo) if vals is not None}
+    out = {sid: {} for sid in cells}
+    for sid in cells:
+        series = {s: (by[('u_10m', s)][sid], by[('v_10m', s)][sid], by.get(('vmax_10m', s), {}).get(sid)) for s in steps if ('u_10m', s) in by and ('v_10m', s) in by}
+        ks = sorted(series)
+        for a, b in zip(ks, ks[1:]):
+            for h in range(a, b):
+                w = (h - a) / (b - a)
+                u = series[a][0] * (1 - w) + series[b][0] * w
+                v = series[a][1] * (1 - w) + series[b][1] * w
+                gust = series[b][2]
+                tt = run + timedelta(hours=h)
+                if tt > end:
+                    break
+                speed, wdir = _wind(u, v)
+                out[sid][tt.strftime('%Y-%m-%dT%H:00')] = {'wind': speed, 'wdir': wdir, 'gust': round(gust * 3.6) if gust is not None else None}
+    print(f'  · viento ICON global (pasada {run:%d %H} UTC): {sum(1 for v in out.values() if v)} spots, {len(steps)} pasos')
     return out
 
 
