@@ -227,7 +227,8 @@ def icon_global(spots, now, end, warnings):
         return var, step, None if vals is None else {sid: float(vals[c]) for sid, c in cells.items()}
 
     with ThreadPoolExecutor(max_workers=12) as pool:
-        by = {(v, s): vals for v, s, vals in pool.map(fetch, [(v, s) for v in names for s in steps]) if vals is not None}
+        todo = [(v, s) for v in names for s in steps if not (v == 'vmax_10m' and s == 0)]  # sin rachas en la hora 0
+        by = {(v, s): vals for v, s, vals in pool.map(fetch, todo) if vals is not None}
     out = {sid: {} for sid in cells}
     for sid in cells:
         series = {s: (by[('u_10m', s)][sid], by[('v_10m', s)][sid], by.get(('vmax_10m', s), {}).get(sid)) for s in steps if ('u_10m', s) in by and ('v_10m', s) in by}
