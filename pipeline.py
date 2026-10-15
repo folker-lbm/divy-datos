@@ -430,6 +430,10 @@ def copernicus(spots, start, end, direct=False):
     # La alta resolución de IBI no llega al norte de Europa (la prueba mundial del 14 oct falló por encima de ~49° N).
     each_zone('turbidez HR ibi', 'cmems_obs_oc_ibi_bgc_tur-spm-chl_nrt_l3-hr-mosaic_P1D-m', lambda z: z['kind'] == 'ibi' and z['box'][1] <= 49, turbidity_hr, **hr_kw)
 
+    # Modelos locales de PacIOOS (Hawái, Guam, Samoa): más finos que el global donde existen (15 oct).
+    from pacioos import pacioos
+    pacioos(spots, res, start, end, nearest_sea_cell, clean, warnings)
+
     sat = dict(variables=['KD490'], start_datetime=s0, end_datetime=t1)
     each_zone('satélite med', 'cmems_obs-oc_med_bgc-transp_nrt_l3-olci-300m_P1D', {'med'}, satellite, **sat)
     each_zone('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', {'ibi', 'nws'}, satellite, **sat)
