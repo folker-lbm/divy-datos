@@ -7,7 +7,7 @@ Fuentes (ver INVESTIGACION-DATOS.md):
     ibérico y el GLOBAL (1/12°) en el resto del mundo.
   · Corriente a ~10 m (horaria): Copernicus IBI en toda España y MEDSEA en el Mediterráneo; fuera, el GLOBAL (cada 6 h,
     interpolado a horas). En la celda de mar más cercana.
-  · Viento: ICON-EU en Europa; fuera, ECMWF Open Data (viento.py).
+  · Viento: ICON-EU en Europa; fuera, ICON global y, de respaldo, ECMWF Open Data (viento.py).
 Catálogo mundial (14 oct): cada spot tiene una región de previsión y la salida se publica por regiones («actual-<región>»;
 España sigue en «actual»). Con --muestra se prueba con la muestra mundial de la API sin publicar nada.
   · Avisos oficiales: AEMET (CAP con contornos), en cada ejecución (avisos.py).
@@ -98,14 +98,27 @@ def region_of(sid):
 
 
 IBI_BOX = (26.0, 56.0, -19.0, 5.0)  # lat mín, lat máx, lon mín, lon máx del modelo IBI (incluye Canarias)
+# Modelos regionales del resto de mares europeos (15 oct, homogeneizar el mundo): noroeste europeo (~1,5 km), Báltico
+# (~2 km) y mar Negro (2,5 km). Su corriente va en la columna «reg» (regional), como MEDSEA e IBI para la app.
+NWS_BOX = (46.0, 62.7, -16.0, 13.0)
+BAL_BOX = (53.0, 65.9, 10.0, 30.2)  # al este de 10° E: el Kattegat y el Skagerrak quedan en el del noroeste
+BLK_BOX = (40.5, 47.3, 27.3, 42.0)
+inside = lambda box, pos: box[0] <= pos[0] <= box[1] and box[2] <= pos[1] <= box[3]  # noqa: E731
 
 
 def kind(pos):
-    """Modelo físico de la zona: MEDSEA (Mediterráneo), IBI (Atlántico ibérico y Canarias) o el global (resto)."""
+    """Modelo físico de la zona: MEDSEA (Mediterráneo), IBI (Atlántico ibérico y Canarias), los del noroeste europeo,
+    Báltico y mar Negro, o el global (resto del mundo)."""
     if is_med(pos):
         return 'med'
-    if IBI_BOX[0] <= pos[0] <= IBI_BOX[1] and IBI_BOX[2] <= pos[1] <= IBI_BOX[3]:
+    if inside(IBI_BOX, pos):
         return 'ibi'
+    if inside(BAL_BOX, pos):
+        return 'bal'
+    if inside(NWS_BOX, pos):
+        return 'nws'
+    if inside(BLK_BOX, pos):
+        return 'blk'
     return 'glo'
 
 
@@ -321,6 +334,9 @@ def copernicus(spots, start, end, direct=False):
     cur = dict(variables=['uo', 'vo'], start_datetime=t0, end_datetime=t1, minimum_depth=8, maximum_depth=12)
     each_zone('corrientes med', 'cmems_mod_med_phy-cur_anfc_4.2km-3D_PT1H-m', {'med'}, currents('med'), **cur)
     each_zone('corrientes ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_PT1H-m', lambda z: z['inIbi'], currents('ibi'), **cur)
+    each_zone('corrientes noroeste', 'cmems_mod_nws_phy-cur_anfc_1.5km-3D_PT1H-i', {'nws'}, currents('reg'), **cur)
+    each_zone('corrientes báltico', 'cmems_mod_bal_phy_anfc_PT1H-i', {'bal'}, currents('reg'), **cur)
+    each_zone('corrientes mar Negro', 'cmems_mod_blk_phy-cur_anfc_2.5km_PT1H-m', {'blk'}, currents('reg'), **cur)
     each_zone('corrientes global', 'cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i', {'glo'}, currents('glo'), **cur)
 
     # Oleaje horario (14 oct, Luka: sin límite de llamadas y de la misma fuente oficial): MEDSEA (4,2 km) en el
@@ -352,7 +368,10 @@ def copernicus(spots, start, end, direct=False):
     wav = dict(variables=['VHM0', 'VMDR', 'VTPK'], start_datetime=t0, end_datetime=t1)
     each_zone('oleaje med', 'cmems_mod_med_wav_anfc_4.2km_PT1H-i', {'med'}, waves('med'), **wav)
     each_zone('oleaje ibi', 'cmems_mod_ibi_wav_anfc_0.027deg_PT1H-i', lambda z: z['inIbi'], waves('ibi'), **wav)
-    # El global, solo en las zonas con algún spot aún sin oleaje (fuera de MEDSEA/IBI, o lejos de su costa).
+    each_zone('oleaje noroeste', 'cmems_mod_nws_wav_anfc_1.5km_PT1H-i', {'nws'}, waves('reg'), **wav)
+    each_zone('oleaje báltico', 'cmems_mod_bal_wav_anfc_PT1H-i', {'bal'}, waves('reg'), **wav)
+    each_zone('oleaje mar Negro', 'cmems_mod_blk_wav_anfc_2.5km_PT1H-i', {'blk'}, waves('reg'), **wav)
+    # El global, solo en las zonas con algún spot aún sin oleaje (fuera de los regionales, o lejos de su costa).
     each_zone('oleaje global', 'cmems_mod_glo_wav_anfc_0.083deg_PT3H-i', lambda z: any(not res[sid]['waves'] for sid in z['ids']), waves('glo'), **wav)
 
     # Perfil diario de temperatura hasta 60 m: MEDSEA en el Mediterráneo, IBI en el Atlántico.
@@ -372,6 +391,9 @@ def copernicus(spots, start, end, direct=False):
     tem = dict(variables=['thetao'], start_datetime=t0, end_datetime=t1, minimum_depth=0, maximum_depth=60)
     each_zone('temperatura med', 'cmems_mod_med_phy-tem_anfc_4.2km_P1D-m', {'med'}, profiles, **tem)
     each_zone('temperatura ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_P1D-m', {'ibi'}, profiles, **tem)
+    each_zone('temperatura noroeste', 'cmems_mod_nws_phy-tem_anfc_1.5km-3D_P1D-m', {'nws'}, profiles, **tem)
+    each_zone('temperatura báltico', 'cmems_mod_bal_phy_anfc_P1D-m', {'bal'}, profiles, **tem)
+    each_zone('temperatura mar Negro', 'cmems_mod_blk_phy-temp_anfc_2.5km_P1D-m', {'blk'}, profiles, **tem)
     each_zone('temperatura global', 'cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m', {'glo'}, profiles, **tem)
 
     # Satélite: mediana de Kd490 alrededor de cada spot por día (al menos el 20 % de la zona sin nubes).
@@ -410,8 +432,8 @@ def copernicus(spots, start, end, direct=False):
 
     sat = dict(variables=['KD490'], start_datetime=s0, end_datetime=t1)
     each_zone('satélite med', 'cmems_obs-oc_med_bgc-transp_nrt_l3-olci-300m_P1D', {'med'}, satellite, **sat)
-    each_zone('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', {'ibi'}, satellite, **sat)
-    each_zone('satélite global', 'cmems_obs-oc_glo_bgc-transp_nrt_l3-multi-4km_P1D', {'glo'}, satellite, **sat)
+    each_zone('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', {'ibi', 'nws'}, satellite, **sat)
+    each_zone('satélite global', 'cmems_obs-oc_glo_bgc-transp_nrt_l3-multi-4km_P1D', {'glo', 'bal', 'blk'}, satellite, **sat)
     return res
 
 
@@ -421,7 +443,7 @@ def iso(t):
 
 SOURCES = {
     'oleaje': 'Copernicus Marine MEDSEA_ANALYSISFORECAST_WAV_006_017, IBI_ANALYSISFORECAST_WAV_005_005 y GLOBAL_ANALYSISFORECAST_WAV_001_027; respaldo: Open-Meteo Marine',
-    'viento': 'DWD ICON-EU (Europa, ~7 km); fuera de Europa: ECMWF Open Data (IFS 0,25°); Canarias y huecos: Open-Meteo Forecast',
+    'viento': 'DWD ICON-EU (Europa, ~7 km); fuera de Europa: DWD ICON global (~13 km) y, de respaldo, ECMWF Open Data (IFS 0,25°); Canarias y huecos: Open-Meteo Forecast',
     'temperatura': 'Copernicus Marine MEDSEA_ANALYSISFORECAST_PHY_006_013 (Mediterráneo), IBI_ANALYSISFORECAST_PHY_005_001 (Atlántico ibérico) y GLOBAL_ANALYSISFORECAST_PHY_001_024 (resto del mundo, 1/12°)',
     'corriente': 'Copernicus Marine MEDSEA, IBI_ANALYSISFORECAST_PHY_005_001 y GLOBAL_ANALYSISFORECAST_PHY_001_024 (~10 m; el global, cada 6 h interpolado); respaldo: Open-Meteo Marine (superficie)',
     'satélite': 'Copernicus Marine OCEANCOLOUR_MED_BGC_L3_NRT_009_141 (OLCI 300 m), OCEANCOLOUR_ATL_BGC_L3_NRT_009_111 (multisensor 1 km) y OCEANCOLOUR_GLO_BGC_L3_NRT_009_101 (multisensor 4 km, resto del mundo)',
@@ -434,7 +456,7 @@ SOURCES = {
 
 # Columnas por spot, alineadas al eje horario común (window.from + i horas). Formato v4: unas 7 veces más pequeño que
 # un objeto por hora, que con 500 spots no se podía descargar al abrir la app.
-COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cGlo', 'cDir', 'cOm', 'sst')
+COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'cGlo', 'cDir', 'cOm', 'sst')
 
 
 # Visibilidad estimada (m) a partir de cada medida. Provisional: se calibra con los reportes (backtest, REGLAS v0.5).
@@ -492,13 +514,13 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
                 row.update(prev_wind[sid][t])
             # Oleaje: Copernicus (MEDSEA > IBI > global) si llega al spot; si no, Open-Meteo.
             wv = c.get('waves', {}).get(t, {})
-            best = next((wv[k] for k in ('med', 'ibi', 'glo') if k in wv and wv[k][0] is not None), None)
+            best = next((wv[k] for k in ('med', 'ibi', 'reg', 'glo') if k in wv and wv[k][0] is not None), None)
             if best:
                 row.update(hs=best[0], dir=best[1], tp=best[2])
             cur = c.get('currents', {}).get(t, {})
             # Dirección: la del modelo más fino disponible (MEDSEA en el Mediterráneo, si no IBI, si no el global).
-            c_dir = next((cur.get(k + 'Dir') for k in ('med', 'ibi', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
-            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cGlo': cur.get('glo'), 'cDir': c_dir}
+            c_dir = next((cur.get(k + 'Dir') for k in ('med', 'ibi', 'reg', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
+            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': cur.get('glo'), 'cDir': c_dir}
             for k in COLUMNS:
                 cols[k].append(vals.get(k))
         out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
@@ -535,7 +557,7 @@ def summary(snapshots, seconds):
             'spots': len(ss),
             'oleaje %': has(lambda s: any(v is not None for v in s['hs'])),
             'viento %': has(lambda s: any(v is not None for v in s['wind'])),
-            'corriente %': has(lambda s: any(v is not None for k in ('cMed', 'cIbi', 'cGlo') for v in s[k])),
+            'corriente %': has(lambda s: any(v is not None for k in ('cMed', 'cIbi', 'cReg', 'cGlo') for v in s[k])),
             'temperatura %': has(lambda s: bool(s['profiles'])),
             'visibilidad %': has(lambda s: bool(s['clarity'])),
             'KB': size // 1024,
@@ -714,12 +736,16 @@ def main():
     # Viento por modelos descargados enteros (viento.py): ICON-EU en Europa y, fuera, ECMWF (global, sin límite de
     # llamadas; catálogo mundial, 14 oct). Open-Meteo, más fino que ECMWF, solo para España fuera de ICON-EU (Canarias)
     # y los huecos.
-    from viento import ecmwf, icon_eu
+    from viento import ecmwf, icon_eu, icon_global
     wind = icon_eu(spots, now, end, warnings)
     world = {sid: spots[sid] for sid in spots if not wind.get(sid) and region_of(sid) != 'es'}
     if world:
-        wind.update(ecmwf(world, now, end, warnings))
-        print(f'ECMWF: viento para {sum(1 for sid in world if wind.get(sid))} de {len(world)} spots fuera de Europa')
+        # ICON global (~13 km; 15 oct) y, para lo que falte, ECMWF (~25 km).
+        wind.update({k: v for k, v in icon_global(world, now, end, warnings).items() if v})
+        rest = {sid: pos for sid, pos in world.items() if not wind.get(sid)}
+        if rest:
+            wind.update(ecmwf(rest, now, end, warnings))
+        print(f'Viento fuera de Europa: {sum(1 for sid in world if wind.get(sid))} de {len(world)} spots (ICON global; ECMWF para {len(rest)})')
     wind_for = {sid for sid in spots if not wind.get(sid)}
     # Plan gratuito de Open-Meteo: 10.000 llamadas al día y 8 ejecuciones diarias. Si Copernicus o ECMWF fallan en todo
     # el mundo, no se puede pedir todo a Open-Meteo: primero España y, del resto, hasta completar el cupo.
