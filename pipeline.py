@@ -449,7 +449,7 @@ SOURCES = {
     'satélite': 'Copernicus Marine OCEANCOLOUR_MED_BGC_L3_NRT_009_141 (OLCI 300 m), OCEANCOLOUR_ATL_BGC_L3_NRT_009_111 (multisensor 1 km) y OCEANCOLOUR_GLO_BGC_L3_NRT_009_101 (multisensor 4 km, resto del mundo)',
     'satéliteHR': 'Copernicus Marine OCEANCOLOUR_MED/IBI_BGC_HR_L3_NRT_009_205/204 (Sentinel-2, 100 m)',
     'satéliteGlobal': 'NASA PACE OCI PACE_OCI_L3M_KD_NRT (4 km)',
-    'avisos': 'AEMET (CAP, Plan Meteoalerta)',
+    'avisos': 'AEMET (CAP, Plan Meteoalerta) en España; NOAA National Weather Service en EE. UU. y sus territorios',
     'boyas': 'Copernicus Marine In Situ INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030',
 }
 
@@ -530,7 +530,7 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
             out_spots[sid]['buoy'] = buoy[sid]
     return {
         'version': 4,
-        'alertsSource': 'AEMET (CAP, Plan Meteoalerta)',
+        'alertsSource': 'AEMET (CAP, Plan Meteoalerta); NOAA National Weather Service (api.weather.gov)',
         'generatedAt': iso(now),
         'copernicusAt': cop.get('generatedAt'),
         'window': {'from': iso(start), 'to': iso(end), 'hours': n},
@@ -760,8 +760,10 @@ def main():
     om = open_meteo(spots, start, end, marine_for, wind_for)
     no_wind = {sid: spots[sid] for sid in wind_for if not any(r.get('wind') is not None for r in om[sid].values())}
     wind.update(ecmwf(no_wind, now, end, warnings))
-    from avisos import aemet  # avisos oficiales (FUENTES-DATOS.md, paso 2)
+    from avisos import aemet, noaa  # avisos oficiales (FUENTES-DATOS.md, paso 2; NOAA: FUENTES-GLOBALES.md, 15 oct)
     alerts = aemet(spots, now, warnings)
+    for sid, items in noaa(spots, now, warnings).items():
+        alerts.setdefault(sid, []).extend(items)
     from boyas import buoys  # medidas reales de boyas (FUENTES-DATOS.md, paso 3)
     buoy = buoys(spots, now, warnings) if copernicus_up() else {}
     prev_wind = previous_wind()

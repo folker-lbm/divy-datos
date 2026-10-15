@@ -5,9 +5,13 @@ España: AEMET publica sus avisos (Plan Meteoalerta) en CAP 1.2 con el contorno 
 RSS. Meteoalarm reúne los mismos avisos para toda Europa, pero sin contornos; por la regla «global salvo que lo local sea
 mucho mejor», en España se usa AEMET directamente y Meteoalarm queda para otros países (pendiente).
 
+Estados Unidos y territorios (15 oct, homogeneizar el mundo): avisos del servicio meteorológico de NOAA (api.weather.gov,
+CAP en GeoJSON, sin clave; datos del Gobierno de EE. UU.). Los marinos vienen por zonas: se pide el contorno de cada zona.
+
 Se usan los avisos que afectan al buceo: costeros (mar y viento en el mar), vientos y tormentas. Un spot queda afectado
 si está dentro del contorno o a menos de 3 km (las coordenadas de los spots son aproximadas y pueden caer en tierra).
 """
+import json
 import re
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -105,6 +109,95 @@ def aemet(spots, now, warnings):
                 out.setdefault(sid, []).append(alert)
     n = sum(len(v) for v in out.values())
     print(f'  · avisos AEMET: {len(seen)} revisados, {n} asignados a {len(out)} spots')
+    return out
+
+
+NOAA = 'https://api.weather.gov'
+# Avisos de NOAA que importan para bucear → (nivel, tipo). Los «Watch» (vigilancia) y los «Statement» quedan en amarillo.
+NOAA_EVENTS = {
+    'Small Craft Advisory': ('amarillo', 'costeros'), 'Small Craft Advisory for Hazardous Seas': ('amarillo', 'costeros'),
+    'Small Craft Advisory for Rough Bar': ('amarillo', 'costeros'), 'Small Craft Advisory for Winds': ('amarillo', 'vientos'),
+    'Brisk Wind Advisory': ('amarillo', 'vientos'), 'Wind Advisory': ('amarillo', 'vientos'), 'High Surf Advisory': ('amarillo', 'costeros'),
+    'Rip Current Statement': ('amarillo', 'costeros'), 'Beach Hazards Statement': ('amarillo', 'costeros'),
+    'Gale Watch': ('amarillo', 'vientos'), 'Hazardous Seas Watch': ('amarillo', 'costeros'), 'Tropical Storm Watch': ('amarillo', 'tormentas'),
+    'Hurricane Watch': ('amarillo', 'tormentas'), 'Typhoon Watch': ('amarillo', 'tormentas'),
+    'Gale Warning': ('naranja', 'vientos'), 'High Wind Warning': ('naranja', 'vientos'), 'High Surf Warning': ('naranja', 'costeros'),
+    'Hazardous Seas Warning': ('naranja', 'costeros'), 'Special Marine Warning': ('naranja', 'tormentas'),
+    'Severe Thunderstorm Warning': ('naranja', 'tormentas'), 'Coastal Flood Warning': ('naranja', 'costeros'),
+    'Tropical Storm Warning': ('naranja', 'tormentas'),
+    'Storm Warning': ('rojo', 'vientos'), 'Hurricane Force Wind Warning': ('rojo', 'vientos'), 'Hurricane Warning': ('rojo', 'tormentas'),
+    'Typhoon Warning': ('rojo', 'tormentas'), 'Storm Surge Warning': ('rojo', 'costeros'), 'Tsunami Warning': ('rojo', 'costeros'),
+}
+# Zonas que pueden tocar a un spot: las marinas (AM, AN, GM, PZ, PK, PH, PM, PS) y las de estados y territorios con costa.
+NOAA_ZONES = {'AM', 'AN', 'GM', 'PZ', 'PK', 'PH', 'PM', 'PS', 'AL', 'CA', 'CT', 'DE', 'FL', 'GA', 'HI', 'LA', 'MA', 'MD', 'ME', 'MS',
+              'NC', 'NH', 'NJ', 'NY', 'OR', 'RI', 'SC', 'TX', 'VA', 'WA', 'PR', 'VI', 'GU', 'AS', 'MP', 'AK'}
+
+
+def _noaa_json(path):
+    req = urllib.request.Request(path if path.startswith('http') else NOAA + path,
+                                 headers={'User-Agent': 'divy-pipeline (joindivy.com)', 'Accept': 'application/geo+json'})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        return json.loads(r.read())
+
+
+def noaa(spots, now, warnings):
+    """{spot_id: [aviso]} con los avisos de NOAA vigentes o próximos que tocan a algún spot."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from shapely.geometry import shape
+
+    out = {}
+    try:
+        feats = _noaa_json('/alerts/active?status=actual')['features']
+    except Exception as e:  # noqa: BLE001
+        warnings.append(f'NOAA avisos: no se pudo leer ({str(e)[:120]})')
+        return out
+    feats = [f for f in feats if f['properties'].get('event') in NOAA_EVENTS]
+    zones = {u for f in feats if not f.get('geometry') for u in f['properties'].get('affectedZones', []) if u.rstrip('/').split('/')[-1][:2] in NOAA_ZONES}
+
+    def zone(u):
+        try:
+            g = _noaa_json(u).get('geometry')
+            return u, shape(g) if g else None
+        except Exception:  # noqa: BLE001
+            return u, None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        shapes = dict(pool.map(zone, sorted(zones)))
+    n_alerts = 0
+    for f in feats:
+        p = f['properties']
+        level, kind = NOAA_EVENTS[p['event']]
+        ends = p.get('ends') or p.get('expires')
+        try:
+            if ends and datetime.fromisoformat(ends) < now:
+                continue
+        except ValueError:
+            pass
+        geoms = [shape(f['geometry'])] if f.get('geometry') else [shapes.get(u) for u in p.get('affectedZones', [])]
+        geoms = [g for g in geoms if g is not None and g.is_valid]
+        if not geoms:
+            continue
+        area = unary_union(geoms)
+        minx, miny, maxx, maxy = area.bounds
+        alert = {
+            'source': 'NOAA',
+            'level': level,
+            'kind': kind,
+            'zone': (p.get('areaDesc') or '')[:160],
+            'from': p.get('onset') or p.get('effective'),
+            'to': ends,
+            'text': (p.get('headline') or p['event'])[:240],
+        }
+        hit = False
+        for sid, (la, lo) in spots.items():
+            if not (minx - NEAR_DEG <= lo <= maxx + NEAR_DEG and miny - NEAR_DEG <= la <= maxy + NEAR_DEG):
+                continue
+            if area.distance(Point(lo, la)) <= NEAR_DEG:
+                out.setdefault(sid, []).append(alert)
+                hit = True
+        n_alerts += hit
+    print(f'  · avisos NOAA: {len(feats)} revisados ({len(zones)} zonas), {n_alerts} tocan a {len(out)} spots')
     return out
 
 
