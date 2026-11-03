@@ -8,6 +8,7 @@ Previsión de oleaje, viento, corriente, temperatura y visibilidad para los spot
 
 
 - **`pipeline.py`:** genera la previsión real que usa la app para todos los spots del catálogo y la publica en la API (`/api/prevision`). Desde la versión 0.8 se ejecuta sola en GitHub Actions (`.github/workflows/prevision.yml`): modo `completo` (Copernicus + Open-Meteo, una vez al día, unos 25 min) y modo `open-meteo` (cada 6 h, recombina con la última parte de Copernicus). Uso local: `.venv/bin/python -I pipeline.py --modo completo [--publicar http://localhost:8787]` (con `DIVY_FORECAST_TOKEN` igual al `FORECAST_TOKEN` de `api/.dev.vars`). Sale a `salida/prevision.json` y `salida/copernicus.json`. Ver `VERSION-0.4.md`, `VERSION-0.5.md` y `VERSION-0.8.md`.
+- **Satélite (3 nov):** se piden los últimos 7 días (`SAT_DIAS`, los mismos que acepta la app para la visibilidad). Fuentes por orden: alta resolución de Copernicus (100 m), Copernicus OLCI o multisensor, NASA PACE y, de relleno, los tres VIIRS de la NASA y la NOAA (`pace.py`, misma cuenta de Earthdata). Vigilancia: si el último día publicado de un producto tiene más de 3 días (`SAT_PARADO_DIAS`), la ejecución completa publica igual, deja el aviso y termina en rojo para que GitHub avise. Origen: el 30 oct Copernicus dejó de publicar el color del océano global y del Atlántico (incidencia OC-1116) y nadie se enteró.
 - **Entorno:** `requirements.txt` (Python 3.9+).
 - **El resto:** pruebas de fuentes para `INVESTIGACION-DATOS.md` (`corrientes.py`, `visibilidad.py`, `backtest_visibilidad.py`, `perfil.py`).
 

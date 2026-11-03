@@ -50,6 +50,13 @@ COP_EXTRA_H = 24
 PAD = 0.15  # margen (°) alrededor de cada zona para encontrar la celda de mar
 SAT_BOX = (0.09, 0.11)
 HR_BOX = (0.009, 0.011)
+# Días de satélite hacia atrás (3 nov): los mismos que acepta la app para la visibilidad (VIS_MAX_DIAS, synthesis.ts).
+# Antes eran 4: cuando Copernicus dejó de publicar el global el 30 oct (OC-1116), su último día salió de la ventana el
+# 3 nov y fuera del Mediterráneo el satélite de Copernicus se quedó vacío, aunque la app aún podía usar ese día.
+SAT_DIAS = 7
+# Un producto de satélite cuyo último día publicado tiene más de estos días se considera parado (vigilancia, 3 nov). Lo
+# normal es 1–2 días; mira la fecha del producto, no las nubes.
+SAT_PARADO_DIAS = 3
 WAVE_MAX_KM = 10  # celda de mar del modelo de oleaje como mucho a 10 km; si no, Open-Meteo para ese spot  # ~1 km alrededor del spot para la turbidez de 100 m  # medio lado (lat, lon) de la zona de satélite alrededor de cada spot (~20 km, como en el backtest)
 warnings: list[str] = []
 # Región de previsión de cada spot (catálogo mundial, 14 oct): la app descarga solo la región que mira. Los spots sin
@@ -261,8 +268,13 @@ def copernicus_up():
         return False
 
 
-def copernicus(spots, start, end, direct=False):
-    """Corriente, perfiles y satélite por zonas. `direct`: leer de la nube de Copernicus sin su servidor de acceso (arco.py)."""
+# Último día publicado de cada producto de satélite en esta ejecución (None: no se pudo leer o no llega a la ventana).
+SAT_LATEST: dict = {}
+
+
+def copernicus(spots, start, end, direct=False, sat_start=None):
+    """Corriente, perfiles y satélite por zonas. `direct`: leer de la nube de Copernicus sin su servidor de acceso (arco.py).
+    `sat_start`: desde cuándo se piden los días de satélite (por defecto, el día antes de `start`)."""
     import copernicusmarine as cm
 
     import xarray as xr
@@ -277,6 +289,7 @@ def copernicus(spots, start, end, direct=False):
     res = {sid: {'currents': {}, 'waves': {}, 'profiles': [], 'seaCell': {}, 'satellite': [], 'hr': []} for sid in spots}
     t0, t1 = start.strftime('%Y-%m-%dT%H:00:00'), end.strftime('%Y-%m-%dT%H:00:00')
     s0 = (start - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00')
+    sat0 = (sat_start or start - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00')
     zs = zones(spots)
     print(f'{len(spots)} spots en {len(zs)} zonas')
 
@@ -404,8 +417,10 @@ def copernicus(spots, start, end, direct=False):
     each_zone('temperatura global', 'cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m', {'glo'}, profiles, **tem)
 
     # Satélite: mediana de Kd490 alrededor de cada spot por día (al menos el 20 % de la zona sin nubes).
-    def satellite(ds, z):
+    def satellite(ds, z, label=None):
         kd = ds.KD490.load()
+        if label and kd.time.size:
+            SAT_LATEST[label] = max(SAT_LATEST.get(label) or '', str(kd.time.values.max())[:10])
         for sid in z['ids']:
             la, lo = spots[sid]
             box = kd.sel(latitude=slice(la - SAT_BOX[0], la + SAT_BOX[0]), longitude=slice(lo - SAT_BOX[1], lo + SAT_BOX[1]))
@@ -444,14 +459,17 @@ def copernicus(spots, start, end, direct=False):
     from caricoos import caricoos_waves
     caricoos_waves(spots, res, start, end, nearest_sea_cell, clean, warnings)
 
-    sat = dict(variables=['KD490'], start_datetime=s0, end_datetime=t1)
-    each_zone('satélite med', 'cmems_obs-oc_med_bgc-transp_nrt_l3-olci-300m_P1D', {'med'}, satellite, **sat)
-    each_zone('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', {'ibi', 'nws'}, satellite, **sat)
-    each_zone('satélite global', 'cmems_obs-oc_glo_bgc-transp_nrt_l3-multi-4km_P1D', {'glo', 'bal', 'blk'}, satellite, **sat)
+    sat = dict(variables=['KD490'], start_datetime=sat0, end_datetime=t1)
+    for label, ds_id, kinds in (('satélite med', 'cmems_obs-oc_med_bgc-transp_nrt_l3-olci-300m_P1D', {'med'}),
+                                ('satélite atl', 'cmems_obs-oc_atl_bgc-transp_nrt_l3-multi-1km_P1D', {'ibi', 'nws'}),
+                                ('satélite global', 'cmems_obs-oc_glo_bgc-transp_nrt_l3-multi-4km_P1D', {'glo', 'bal', 'blk'})):
+        if any(zone_kind in kinds for zone_kind in {z['kind'] for z in zs}):
+            SAT_LATEST.setdefault(f'Copernicus {label}', None)
+        each_zone(label, ds_id, kinds, lambda ds, z, label=label: satellite(ds, z, f'Copernicus {label}'), **sat)
     # Visibilidad fuera de Europa con OLCI de 300 m (15 oct, FUENTES-GLOBALES.md): clorofila → Kd490 (Morel 2007). En el
     # Mediterráneo, frente al Kd490 oficial de 300 m, el error medio de visibilidad bajó de 2,0 m (4 km) a 1,4 m. El
     # producto se abre una vez y se lee una ventana pequeña por spot; los de 4 km quedan de respaldo (va después: gana).
-    olci300(spots, res, s0, t1, warnings)
+    olci300(spots, res, sat0, t1, warnings)
     return res
 
 
@@ -464,12 +482,15 @@ def olci300(spots, res, start, end, warnings):
     ids = [sid for sid, pos in spots.items() if kind(pos) in ('glo', 'bal', 'blk')]
     if not ids:
         return
+    SAT_LATEST.setdefault('Copernicus OLCI 300 m', None)
     try:
         chl = cm.open_dataset(dataset_id='cmems_obs-oc_glo_bgc-plankton_nrt_l3-olci-300m_P1D', variables=['CHL'],
                               start_datetime=start, end_datetime=end).CHL
     except Exception as e:  # noqa: BLE001
         warnings.append(f'OLCI 300 m: {type(e).__name__} {str(e)[:120]}')
         return
+    if chl.time.size:
+        SAT_LATEST['Copernicus OLCI 300 m'] = str(chl.time.values.max())[:10]
 
     def one(sid):
         la, lo = spots[sid]
@@ -495,6 +516,18 @@ def olci300(spots, res, start, end, warnings):
     print(f'  · satélite OLCI 300 m: {sum(1 for d in days if d)} de {len(ids)} spots con algún día')
 
 
+def satellite_stalled(now):
+    """Avisos por producto de satélite cuyo último día publicado tiene más de SAT_PARADO_DIAS (o que no llega)."""
+    out = []
+    for label, last in sorted(SAT_LATEST.items()):
+        if last is None:
+            out.append(f'{label}: sin días en los últimos {SAT_DIAS}')
+        elif (now.date() - datetime.fromisoformat(last).date()).days > SAT_PARADO_DIAS:
+            out.append(f'{label}: último día {last}')
+    print(f'  · satélite, último día por producto: {SAT_LATEST or "ninguno"}')
+    return out
+
+
 def iso(t):
     return t.isoformat().replace('+00:00', 'Z')
 
@@ -506,7 +539,7 @@ SOURCES = {
     'corriente': 'Copernicus Marine MEDSEA, IBI_ANALYSISFORECAST_PHY_005_001 y GLOBAL_ANALYSISFORECAST_PHY_001_024 (~10 m; el global, cada 6 h interpolado); respaldo: Open-Meteo Marine (superficie)',
     'satélite': 'Copernicus Marine OCEANCOLOUR_MED_BGC_L3_NRT_009_141 (OLCI 300 m), OCEANCOLOUR_ATL_BGC_L3_NRT_009_111 (multisensor 1 km) y OCEANCOLOUR_GLO_BGC_L3_NRT_009_101 (multisensor 4 km, resto del mundo)',
     'satéliteHR': 'Copernicus Marine OCEANCOLOUR_MED/IBI_BGC_HR_L3_NRT_009_205/204 (Sentinel-2, 100 m)',
-    'satéliteGlobal': 'NASA PACE OCI PACE_OCI_L3M_KD_NRT (4 km)',
+    'satéliteGlobal': 'NASA PACE OCI PACE_OCI_L3M_KD_NRT (4 km); respaldo: NASA/NOAA VIIRS SNPP, NOAA-20 y NOAA-21 VIIRS*_L3m_KD_NRT (4 km)',
     'avisos': 'AEMET (CAP, Plan Meteoalerta) en España; NOAA National Weather Service en EE. UU. y sus territorios',
     'boyas': 'Copernicus Marine In Situ INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030',
 }
@@ -531,7 +564,8 @@ def vis_from_tur(tur):
 
 # Prioridad de fuentes de visibilidad (Luka, 13 oct: «que cada spot tenga la información más fiable»): por día, la de
 # mayor resolución cerca de la costa. Los reportes de buceadores van por encima de todas, pero se combinan en la app.
-CLARITY_PRIORITY = ('hr', 'olci', 'pace')
+# VIIRS (3 nov) va al final: solo rellena los días sin otra medida. La app lo muestra como «satélite» (fuente genérica).
+CLARITY_PRIORITY = ('hr', 'olci', 'pace', 'viirs')
 
 
 def clarity(c):
@@ -542,9 +576,10 @@ def clarity(c):
     for row in c.get('satellite', []):
         if row.get('kd') is not None:
             by_day.setdefault(row['date'], {})['olci'] = {'source': 'olci', 'kd': row['kd'], 'vis': vis_from_kd(row['kd'])}
-    for row in c.get('pace', []):
-        if row.get('kd') is not None:
-            by_day.setdefault(row['date'], {})['pace'] = {'source': 'pace', 'kd': row['kd'], 'vis': vis_from_kd(row['kd'])}
+    for key in ('pace', 'viirs'):
+        for row in c.get(key, []):
+            if row.get('kd') is not None:
+                by_day.setdefault(row['date'], {})[key] = {'source': key, 'kd': row['kd'], 'vis': vis_from_kd(row['kd'])}
     out = []
     for day in sorted(by_day):
         best = next((by_day[day][k] for k in CLARITY_PRIORITY if k in by_day[day] and by_day[day][k]['vis'] is not None), None)
@@ -760,7 +795,7 @@ def main():
     fresh_cop = False
     if args.modo == 'completo':
         # Si su servidor de acceso no responde, se leen los mismos datos directamente de su nube (arco.py, 14 oct).
-        cop_spots = copernicus(spots, start, end + timedelta(hours=COP_EXTRA_H), direct=not copernicus_up())
+        cop_spots = copernicus(spots, start, end + timedelta(hours=COP_EXTRA_H), direct=not copernicus_up(), sat_start=now - timedelta(days=SAT_DIAS))
         with_data = sum(1 for v in cop_spots.values() if v['currents'] or v['profiles'])  # 0 si no se pudo ni empezar
         if with_data >= 0.5 * len(spots):
             cop = {'generatedAt': iso(now), 'warnings': list(warnings), 'spots': {sid: {
@@ -775,12 +810,19 @@ def main():
         # NASA PACE (global, 4 km): relleno de los días sin satélite de Copernicus. Va aparte: se descarga aunque Copernicus
         # esté caído y se guarda con su parte para las ejecuciones de Open-Meteo.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from pace import pace_kd
-        pace = pace_kd(spots, now, 4, SAT_BOX, warnings)
-        for sid, rows in pace.items():
-            cop['spots'].setdefault(sid, {})['pace'] = rows
-        if pace:
-            fresh_cop = True  # hay algo nuevo que guardar, aunque la parte de Copernicus sea la anterior
+        from pace import PACE, VIIRS, pace_kd
+        for key, product in (('pace', PACE), ('viirs', VIIRS)):
+            rows_by_spot = pace_kd(spots, now, SAT_DIAS, SAT_BOX, warnings, product)
+            if os.environ.get('EARTHDATA_USERNAME'):  # sin cuenta de la NASA no se vigila (se omite con su aviso)
+                SAT_LATEST[product[0]] = max((r['date'] for rows in rows_by_spot.values() for r in rows), default=None)
+            for sid, rows in rows_by_spot.items():
+                cop['spots'].setdefault(sid, {})[key] = rows
+            if rows_by_spot:
+                fresh_cop = True  # hay algo nuevo que guardar, aunque la parte de Copernicus sea la anterior
+        stalled = satellite_stalled(now)
+        for msg in stalled:
+            warnings.append(msg)
+            print(f'::warning title=Satélite parado::{msg}')
         if fresh_cop:
             cop_file.write_text(json.dumps(cop, ensure_ascii=False, separators=(',', ':')))
     else:
@@ -860,6 +902,10 @@ def main():
             # España sigue en «actual» (la app anterior la lee de /api/prevision).
             publish(args.publicar, 'actual' if r == 'es' else f'actual-{r}', snapshots[r])
     print(f'Tiempo total: {(time.time() - t_start) / 60:.1f} min')
+    if args.modo == 'completo' and stalled and not args.muestra:
+        # La previsión ya está publicada; el trabajo sale en rojo para que se vea (GitHub avisa por correo de los fallos),
+        # como la vigilancia semanal de Copernicus. Antes el satélite se quedaba vacío en silencio (3 nov).
+        sys.exit(f'Satélite parado: {"; ".join(stalled)}')
 
 
 if __name__ == '__main__':

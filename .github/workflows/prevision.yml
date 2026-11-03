@@ -26,9 +26,10 @@ on:
         type: boolean
         default: false
 
-# Nunca dos ejecuciones a la vez: la de Open-Meteo depende de la parte de Copernicus de la última completa.
+# Nunca dos ejecuciones a la vez: la de Open-Meteo depende de la parte de Copernicus de la última completa. Las de
+# pruebas van en su propia cola (3 nov): en la común, una pendiente de pruebas podía cancelar la pendiente de producción.
 concurrency:
-  group: prevision
+  group: ${{ inputs.pruebas && 'prevision-pruebas' || 'prevision' }}
   cancel-in-progress: false
 
 jobs:
