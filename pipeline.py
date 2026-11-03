@@ -184,7 +184,12 @@ def get_json(url, tries=4):
 
 
 def clean(v, nd=2):
-    return None if v is None or (isinstance(v, float) and math.isnan(v)) else round(float(v), nd)
+    # Los modelos de Copernicus vienen en float32, que no es `float`: su NaN pasaba tal cual al JSON y la API rechazaba
+    # la parte entera (400 al publicar «copernicus-es» y «copernicus-med» en staging, 3 nov).
+    if v is None:
+        return None
+    v = float(v)
+    return round(v, nd) if math.isfinite(v) else None
 
 
 OM_BATCH = 100  # spots por petición a Open-Meteo (una URL con 500 coordenadas es demasiado larga)
