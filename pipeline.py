@@ -506,7 +506,11 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
                 for t, (kmh, rumbo, _, _) in m['horas'].items():
                     h = res[sid]['currents'].get(t)
                     if h and h.get('glo') is not None:
-                        h['glo'], h['gloDir'] = suma_corrientes(h['glo'], h.get('gloDir'), kmh, rumbo)
+                        v, r = suma_corrientes(h['glo'], h.get('gloDir'), kmh, rumbo)
+                        # Un decimal y el rumbo cada 5°: con la marea la corriente cambia cada hora y comprime peor; así
+                        # la previsión compacta de sudeste pasa de 565 a unos 500 KB (staging, 7 nov). La app redondea igual.
+                        h['glo'] = None if v is None else round(v, 1)
+                        h['gloDir'] = None if r is None else (round(r / 5) * 5) % 360
         print(f'  · marea ({len(mareas)} spots)')
     return res
 
@@ -678,7 +682,10 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
         out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
         if c.get('marea'):
             from marea import recorta
-            out_spots[sid]['marea'] = recorta(c['marea'], keys[0], keys[-1])
+            # Solo desde 24 h antes de ahora (la ficha no enseña repuntes más viejos), con la hora en minutos desde el
+            # inicio de la ventana.
+            desde = max(keys[0], (now - timedelta(hours=24)).strftime('%Y-%m-%dT%H:00'))
+            out_spots[sid]['marea'] = recorta(c['marea'], desde, keys[-1], base=start)
         if corr.get(sid):
             out_spots[sid]['corr'] = corr[sid]
         if alerts and alerts.get(sid):

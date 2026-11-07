@@ -238,9 +238,11 @@ def compacta(info, desde, hasta):
             'max': info['maxKmh']}
 
 
-def recorta(c, desde, hasta):
-    """El resumen compacto (`compacta`) recortado a la ventana de la previsión publicada (horas 'AAAA-MM-DDTHH:00')."""
-    from datetime import date
+def recorta(c, desde, hasta, base=None):
+    """El resumen compacto (`compacta`) recortado a las horas de `desde` a `hasta` ('AAAA-MM-DDTHH:00'). Con `base`
+    (datetime UTC, el inicio de la ventana de la previsión), cada evento lleva la hora en minutos desde `base` en lugar
+    de 'MMDDHHMM' (comprime mejor)."""
+    from datetime import date, datetime, timezone
 
     def completa(m):  # 'MMDDHHMM' → 'AAAA-MM-DDTHH:MM', con el año de la ventana (que puede cruzar el fin de año)
         y = int(desde[:4]) + (1 if m[:2] < desde[5:7] else 0)
@@ -249,6 +251,8 @@ def recorta(c, desde, hasta):
     d0 = date.fromisoformat(c.get('d0', desde[:10]))
     i = max(0, (date.fromisoformat(desde[:10]) - d0).days)
     n = (date.fromisoformat(hasta[:10]) - date.fromisoformat(desde[:10])).days + 1
+    if base is not None:
+        ev = [[int((datetime.fromisoformat(completa(e[0])).replace(tzinfo=timezone.utc) - base).total_seconds() // 60), e[1], e[2]] for e in ev]
     return {**c, 'e': ev, 'd0': max(d0, date.fromisoformat(desde[:10])).isoformat(), 'f': c.get('f', '')[i:i + n]}
 
 
