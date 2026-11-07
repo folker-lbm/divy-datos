@@ -292,7 +292,7 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     if direct:
         print('Copernicus: lectura directa (servidor de acceso caído)')
 
-    res = {sid: {'currents': {}, 'waves': {}, 'profiles': [], 'seaCell': {}, 'satellite': [], 'hr': []} for sid in spots}
+    res = {sid: {'currents': {}, 'waves': {}, 'profiles': [], 'seaCell': {}, 'satellite': [], 'hr': [], 'marea': None} for sid in spots}
     t0, t1 = start.strftime('%Y-%m-%dT%H:00:00'), end.strftime('%Y-%m-%dT%H:00:00')
     s0 = (start - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00')
     sat0 = (sat_start or start - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00')
@@ -364,6 +364,18 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     each_zone('corrientes báltico', 'cmems_mod_bal_phy_anfc_PT1H-i', {'bal'}, currents('reg'), **cur)
     each_zone('corrientes mar Negro', 'cmems_mod_blk_phy-cur_anfc_2.5km_PT1H-m', {'blk'}, currents('reg'), **cur)
     each_zone('corrientes global', 'cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i', {'glo'}, currents('glo'), **cur)
+
+    # Marea de Copernicus (T124, fase 2): corriente de marea hora a hora y su ritmo (pleamar, bajamar, repuntes, vivas o
+    # muertas) en todos los spots. El global de arriba no la lleva; los regionales europeos, sí.
+    if MAREA:
+        from marea import descargar as marea_descargar
+        for sid, m in marea_descargar(spots, start, end, warnings).items():
+            res[sid]['marea'] = m['marea']
+            res[sid]['seaCell']['mar'] = m['marea']['celdaKm']
+            for t, (kmh, rumbo, _, _) in m['horas'].items():
+                h = res[sid]['currents'].setdefault(t, {})
+                h['mar'], h['marDir'] = kmh, rumbo
+        print('  · marea')
 
     # Oleaje horario (14 oct, Luka: sin límite de llamadas y de la misma fuente oficial): MEDSEA (4,2 km) en el
     # Mediterráneo, IBI (2,8 km, también Canarias) y el global (9 km, cada 3 h) para lo que quede fuera.
@@ -554,6 +566,16 @@ SOURCES = {
 # Columnas por spot, alineadas al eje horario común (window.from + i horas). Formato v4: unas 7 veces más pequeño que
 # un objeto por hora, que con 500 spots no se podía descargar al abrir la app.
 COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'cGlo', 'cDir', 'cOm', 'sst')
+# Marea (T124, fase 2; en prueba: sin el OK de Luka no se publica). Con DIVY_MAREA=1, el modo completo descarga la marea
+# de Copernicus (marea.py) y cada spot lleva su ritmo en «marea», compacto (marea.compacta). Con DIVY_SUMAR_MAREA=1,
+# además, «cGlo» pasa a ser la corriente global más la de marea (suma de vectores), solo donde manda el global: los
+# regionales europeos ya llevan la marea dentro. Comparado con IBI, que sí la lleva, sumarla baja el error de 0,70 a
+# 0,40 km/h (mediana de 29 spots). No hay columnas nuevas: con ellas la previsión crecía un 45 % comprimida; así, un 15 %.
+# Con datos/corriente-spots.json (calculado una vez, ver docs/T124 del repositorio de la app), cada spot lleva también
+# «corr»: la confianza calculada de la corriente, sus motivos y la corriente habitual del spot (percentiles de un año).
+MAREA = os.environ.get('DIVY_MAREA') == '1'
+SUMAR_MAREA = os.environ.get('DIVY_SUMAR_MAREA') == '1'
+CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.json'
 
 
 # Visibilidad estimada (m) a partir de cada medida. Provisional: se calibra con los reportes (backtest, REGLAS v0.5).
@@ -594,10 +616,20 @@ def clarity(c):
     return out
 
 
+def suma_corrientes(a, a_dir, b, b_dir):
+    """Suma de dos corrientes dadas como velocidad (km/h) y rumbo (grados hacia donde van): (velocidad, rumbo)."""
+    if a_dir is None:
+        return a, a_dir
+    u = a * math.sin(math.radians(a_dir)) + b * math.sin(math.radians(b_dir))
+    v = a * math.cos(math.radians(a_dir)) + b * math.cos(math.radians(b_dir))
+    return clean(math.hypot(u, v)), clean((math.degrees(math.atan2(u, v)) + 360) % 360, 0)
+
+
 def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, prev_wind=None):
     """Previsión que usa la app: columnas horarias (Open-Meteo + corriente de Copernicus), perfiles y satélite."""
     n = int((end - start).total_seconds() // 3600) + 1
     keys = [(start + timedelta(hours=i)).strftime('%Y-%m-%dT%H:00') for i in range(n)]
+    corr = json.loads(CORRIENTE_SPOTS.read_text()) if MAREA and CORRIENTE_SPOTS.exists() else {}
     out_spots = {}
     for sid in spots:
         c = cop.get('spots', {}).get(sid, {})
@@ -618,11 +650,19 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
                 row.update(hs=best[0], dir=best[1], tp=best[2])
             cur = c.get('currents', {}).get(t, {})
             # Dirección: la del modelo más fino disponible (MEDSEA en el Mediterráneo, si no IBI, si no el global).
-            c_dir = next((cur.get(k + 'Dir') for k in ('med', 'ibi', 'reg', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
-            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': cur.get('glo'), 'cDir': c_dir}
+            c_glo, c_glo_dir = cur.get('glo'), cur.get('gloDir')
+            if SUMAR_MAREA and c_glo is not None and cur.get('mar') is not None:
+                c_glo, c_glo_dir = suma_corrientes(c_glo, c_glo_dir, cur['mar'], cur['marDir'])
+            c_dir = next(((c_glo_dir if k == 'glo' else cur.get(k + 'Dir')) for k in ('med', 'ibi', 'reg', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
+            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': c_glo, 'cDir': c_dir}
             for k in COLUMNS:
                 cols[k].append(vals.get(k))
         out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
+        if c.get('marea'):
+            from marea import compacta
+            out_spots[sid]['marea'] = compacta(c['marea'], keys[0], keys[-1])
+        if corr.get(sid):
+            out_spots[sid]['corr'] = corr[sid]
         if alerts and alerts.get(sid):
             out_spots[sid]['alerts'] = alerts[sid]
         if buoy and buoy.get(sid):
@@ -805,7 +845,8 @@ def main():
         with_data = sum(1 for v in cop_spots.values() if v['currents'] or v['profiles'])  # 0 si no se pudo ni empezar
         if with_data >= 0.5 * len(spots):
             cop = {'generatedAt': iso(now), 'warnings': list(warnings), 'spots': {sid: {
-                'seaCell': v['seaCell'], 'currents': v['currents'], 'waves': v['waves'], 'profiles': v['profiles'], 'satellite': v['satellite'], 'hr': v['hr']} for sid, v in cop_spots.items()}}
+                'seaCell': v['seaCell'], 'currents': v['currents'], 'waves': v['waves'], 'profiles': v['profiles'], 'satellite': v['satellite'], 'hr': v['hr'],
+                **({'marea': v['marea']} if v.get('marea') else {})} for sid, v in cop_spots.items()}}
             fresh_cop = True
         else:
             # Fiabilidad (Luka, 13 oct): si Copernicus falla (p. ej. caída de su servidor de acceso), no se publica una
