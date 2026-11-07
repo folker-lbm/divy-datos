@@ -367,14 +367,20 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
 
     # Marea de Copernicus (T124, fase 2): corriente de marea hora a hora y su ritmo (pleamar, bajamar, repuntes, vivas o
     # muertas) en todos los spots. El global de arriba no la lleva; los regionales europeos, sí.
+    # Se guarda poco (staging, 7 nov: con la marea hora a hora la parte de Copernicus de España pasaba de 11,5 a 14,9 MB,
+    # y el límite de una clave es 25 MB): el ritmo, compacto, y la suma ya hecha en la corriente global.
     if MAREA:
+        from marea import compacta
         from marea import descargar as marea_descargar
+        k0, k1 = start.strftime('%Y-%m-%dT%H:00'), end.strftime('%Y-%m-%dT%H:00')
         for sid, m in marea_descargar(spots, start, end, warnings).items():
-            res[sid]['marea'] = m['marea']
+            res[sid]['marea'] = compacta(m['marea'], k0, k1)
             res[sid]['seaCell']['mar'] = m['marea']['celdaKm']
-            for t, (kmh, rumbo, _, _) in m['horas'].items():
-                h = res[sid]['currents'].setdefault(t, {})
-                h['mar'], h['marDir'] = kmh, rumbo
+            if SUMAR_MAREA:
+                for t, (kmh, rumbo, _, _) in m['horas'].items():
+                    h = res[sid]['currents'].get(t)
+                    if h and h.get('glo') is not None:
+                        h['glo'], h['gloDir'] = suma_corrientes(h['glo'], h.get('gloDir'), kmh, rumbo)
         print('  · marea')
 
     # Oleaje horario (14 oct, Luka: sin límite de llamadas y de la misma fuente oficial): MEDSEA (4,2 km) en el
@@ -650,17 +656,15 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
                 row.update(hs=best[0], dir=best[1], tp=best[2])
             cur = c.get('currents', {}).get(t, {})
             # Dirección: la del modelo más fino disponible (MEDSEA en el Mediterráneo, si no IBI, si no el global).
-            c_glo, c_glo_dir = cur.get('glo'), cur.get('gloDir')
-            if SUMAR_MAREA and c_glo is not None and cur.get('mar') is not None:
-                c_glo, c_glo_dir = suma_corrientes(c_glo, c_glo_dir, cur['mar'], cur['marDir'])
-            c_dir = next(((c_glo_dir if k == 'glo' else cur.get(k + 'Dir')) for k in ('med', 'ibi', 'reg', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
-            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': c_glo, 'cDir': c_dir}
+            # Con DIVY_SUMAR_MAREA, «glo» ya viene con la marea sumada (copernicus()).
+            c_dir = next((cur.get(k + 'Dir') for k in ('med', 'ibi', 'reg', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
+            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': cur.get('glo'), 'cDir': c_dir}
             for k in COLUMNS:
                 cols[k].append(vals.get(k))
         out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
         if c.get('marea'):
-            from marea import compacta
-            out_spots[sid]['marea'] = compacta(c['marea'], keys[0], keys[-1])
+            from marea import recorta
+            out_spots[sid]['marea'] = recorta(c['marea'], keys[0], keys[-1])
         if corr.get(sid):
             out_spots[sid]['corr'] = corr[sid]
         if alerts and alerts.get(sid):

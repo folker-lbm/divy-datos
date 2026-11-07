@@ -225,16 +225,31 @@ def analiza(times, u, v, h, fases):
 
 
 def compacta(info, desde, hasta):
-    """Ritmo de la marea para la previsión publicada, en pocos bytes (con las claves largas crecía un 45 %):
+    """Ritmo de la marea en pocos bytes (con las claves largas, la previsión crecía un 45 %):
       · `t`: 'v' vaivén, 'g' giratoria o 'f' floja;
       · `e`: eventos entre `desde` y `hasta` (horas 'AAAA-MM-DDTHH:00'), cada uno [hora UTC 'MMDDHHMM', tipo, valor]:
         'r' repunte (valor: rumbo hacia el que va después), 'p' pleamar o 'b' bajamar (valor: altura en m);
-      · `f`: fase de cada día UTC desde el primero de la ventana: 'v' vivas, 'm' muertas, 'i' intermedia;
-      · `max`: corriente de marea más fuerte de la ventana (km/h)."""
+      · `d0` y `f`: primer día UTC y la fase de cada día desde él: 'v' vivas, 'm' muertas, 'i' intermedia;
+      · `max`: corriente de marea más fuerte (km/h)."""
     ev = [[e['t'][5:].replace('-', '').replace('T', '').replace(':', ''), e['tipo'][0], e.get('hacia', e.get('m'))]
           for e in info['eventos'] if desde <= e['t'] <= hasta[:13] + ':59']
     dias = [x for x in info['dias'] if desde[:10] <= x['d'] <= hasta[:10]]
-    return {'t': info['tipo'][0], 'e': ev, 'f': ''.join(x['fase'][0] for x in dias), 'max': info['maxKmh']}
+    return {'t': info['tipo'][0], 'e': ev, 'd0': dias[0]['d'] if dias else desde[:10], 'f': ''.join(x['fase'][0] for x in dias),
+            'max': info['maxKmh']}
+
+
+def recorta(c, desde, hasta):
+    """El resumen compacto (`compacta`) recortado a la ventana de la previsión publicada (horas 'AAAA-MM-DDTHH:00')."""
+    from datetime import date
+
+    def completa(m):  # 'MMDDHHMM' → 'AAAA-MM-DDTHH:MM', con el año de la ventana (que puede cruzar el fin de año)
+        y = int(desde[:4]) + (1 if m[:2] < desde[5:7] else 0)
+        return f'{y}-{m[:2]}-{m[2:4]}T{m[4:6]}:{m[6:]}'
+    ev = [e for e in c.get('e', []) if desde <= completa(e[0]) <= hasta[:13] + ':59']
+    d0 = date.fromisoformat(c.get('d0', desde[:10]))
+    i = max(0, (date.fromisoformat(desde[:10]) - d0).days)
+    n = (date.fromisoformat(hasta[:10]) - date.fromisoformat(desde[:10])).days + 1
+    return {**c, 'e': ev, 'd0': max(d0, date.fromisoformat(desde[:10])).isoformat(), 'f': c.get('f', '')[i:i + n]}
 
 
 VECINAS = 2  # celdas a cada lado del spot donde se busca la celda de mar (±2 celdas de 1/12°, unos ±18 km)
