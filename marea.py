@@ -285,8 +285,11 @@ def descargar(spots, t0, t1, warnings, opener=None):
     """Marea de cada spot entre t0 y t1 (datetime UTC). Devuelve {sid: {'horas': {hora: (kmh, rumbo, u, v)}, 'marea': {...}}}.
     Lee de la nube pública de Copernicus (sin inicio de sesión): solo las celdas cercanas a cada spot. `opener` no se usa
     (compatibilidad)."""
+    import time
+
     import dask
 
+    t_ini = time.time()
     fases = fases_luna(t0, t1)
     out = {}
     try:
@@ -369,4 +372,5 @@ def descargar(spots, t0, t1, warnings, opener=None):
             out[sid] = {'horas': horas, 'marea': info, 'celda': (int(I[k]), int(J[k])), 'celdaGeneral': celda_uo}
         except Exception as e:  # noqa: BLE001
             warnings.append(f'Marea ({sid}): {type(e).__name__} {str(e)[:120]}')
+    print(f'  · marea descargada: {len(out)} spots en {time.time() - t_ini:.0f} s', flush=True)
     return out
