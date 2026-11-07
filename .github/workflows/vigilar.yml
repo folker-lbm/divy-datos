@@ -1,0 +1,47 @@
+# Vigilancia desde fuera (T103, 7 nov). El vigilante principal vive en el Worker de Divy (api/src/salud.ts): cada 15
+# minutos revisa las fuentes, el proceso y la web, y avisa a Luka por correo. Este flujo vigila al vigilante y lo que el
+# Worker no puede ver:
+# · latido: cada 3 horas pide https://joindivy.com/api/salud/latido; si el vigilante lleva más de 1 h sin correr (o la
+#   web no responde), la ejecución falla y GitHub avisa por correo.
+# · retirada: los lunes, los productos de Copernicus que usa el proceso (vigilar_copernicus.py): si a alguno le quedan
+#   menos de 60 días para retirarse sin sustituto, falla. Antes se llamaba «Vigilar Copernicus».
+name: Vigilar
+
+on:
+  schedule:
+    - cron: '23 */3 * * *' # latido, cada 3 horas
+    - cron: '0 8 * * 1' # retirada de productos, los lunes a las 8:00 UTC
+  workflow_dispatch:
+
+jobs:
+  latido:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 */3 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: El vigilante del Worker ha corrido en la última hora
+        run: |
+          at=$(curl -fsS --max-time 30 -A divy-vigilar https://joindivy.com/api/salud/latido | python3 -c 'import json,sys; print(json.load(sys.stdin)["at"] or "")')
+          echo "Último latido: ${at:-ninguno}"
+          python3 - "$at" <<'PY'
+          import sys
+          from datetime import datetime, timezone
+          at = sys.argv[1]
+          if not at:
+              sys.exit('El vigilante de salud no ha corrido nunca (api/src/salud.ts)')
+          edad = (datetime.now(timezone.utc) - datetime.fromisoformat(at.replace('Z', '+00:00'))).total_seconds() / 3600
+          if edad > 1:
+              sys.exit(f'El vigilante de salud lleva {edad:.1f} h sin correr: mira el temporizador del Worker (Cloudflare › Workers › divy › Triggers)')
+          PY
+
+  retirada:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 8 * * 1'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - run: python -I vigilar_copernicus.py

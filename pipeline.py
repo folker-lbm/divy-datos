@@ -198,6 +198,7 @@ OM_BATCH = 100  # spots por petición a Open-Meteo (una URL con 500 coordenadas 
 OM_PAUSE_S = 25
 # Spots que se pueden pedir a Open-Meteo en cada ejecución (10.000 llamadas/día entre 8 ejecuciones, con margen).
 OM_MAX_PER_RUN = 1100
+OM_LIMITE_DIA = 10_000  # plan gratuito y no comercial de Open-Meteo (T38)
 
 
 def open_meteo(spots, start, end, marine_for=None, wind_for=None):
@@ -863,12 +864,14 @@ def main():
     wind_for = {sid for sid in spots if not wind.get(sid)}
     # Plan gratuito de Open-Meteo: 10.000 llamadas al día y 8 ejecuciones diarias. Si Copernicus o ECMWF fallan en todo
     # el mundo, no se puede pedir todo a Open-Meteo: primero España y, del resto, hasta completar el cupo.
+    sin_respaldo = 0
     cupo = args.cupo_om - len(marine_for & {s for s in spots if region_of(s) == 'es'}) - len(wind_for & {s for s in spots if region_of(s) == 'es'})
     for name, group in (('Marine', marine_for), ('Forecast', wind_for)):
         rest = sorted(sid for sid in group if region_of(sid) != 'es')
         if len(rest) > max(0, cupo):
             group.difference_update(rest[max(0, cupo):])
             warnings.append(f'Open-Meteo {name}: {len(rest) - max(0, cupo)} spots fuera de España sin respaldo (cupo diario)')
+            sin_respaldo += len(rest) - max(0, cupo)
         cupo -= min(len(rest), max(0, cupo))
     print(f'Open-Meteo Marine para {len(marine_for)} y Forecast para {len(wind_for)} de {len(spots)} spots')
     om = open_meteo(spots, start, end, marine_for, wind_for)
@@ -886,6 +889,11 @@ def main():
         ids = [sid for sid in spots if region_of(sid) == r]
         snapshots[r] = merge({sid: spots[sid] for sid in ids}, om, cop, now, start, end, alerts, buoy, wind, prev_wind)
         snapshots[r]['region'] = r
+        # Consumo de Open-Meteo de esta ejecución (T103/T66, 7 nov): el vigilante de la API suma el del día por grupo de
+        # regiones y avisa al 80 % del plan gratuito. Cada spot pedido cuenta como una llamada (Marine y Forecast aparte).
+        snapshots[r]['consumo'] = {'openMeteo': {'llamadas': len(marine_for) + len(wind_for), 'marine': len(marine_for), 'forecast': len(wind_for),
+                                                 'sinRespaldo': sin_respaldo, 'grupo': ' '.join(sorted(args.regiones)) if args.regiones else 'todas',
+                                                 'limiteDia': OM_LIMITE_DIA}}
         (OUT_DIR / out_name(r)).write_text(json.dumps(snapshots[r], ensure_ascii=False, separators=(',', ':')))
     n_hours = sum(sum(v is not None for v in s['hs']) for snap in snapshots.values() for s in snap['spots'].values())
     print(f'OK salida/ · {len(spots)} spots · {n_hours} horas · avisos: {warnings or "ninguno"}')
