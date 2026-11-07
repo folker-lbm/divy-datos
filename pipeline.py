@@ -369,19 +369,15 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     # muertas) en todos los spots. El global de arriba no la lleva; los regionales europeos, sí.
     # Se guarda poco (staging, 7 nov: con la marea hora a hora la parte de Copernicus de España pasaba de 11,5 a 14,9 MB,
     # y el límite de una clave es 25 MB): el ritmo, compacto, y la suma ya hecha en la corriente global.
+    # La descarga va en paralelo con el oleaje, la temperatura y el satélite (staging, 7 nov: en serie, el grupo de Europa,
+    # África y el mar Rojo pasaba de unos 22 a 37 minutos); se aplica al final, cuando ya está la corriente global.
+    marea_futura = None
     if MAREA:
-        from marea import compacta
+        from concurrent.futures import ThreadPoolExecutor
+
         from marea import descargar as marea_descargar
-        k0, k1 = start.strftime('%Y-%m-%dT%H:00'), end.strftime('%Y-%m-%dT%H:00')
-        for sid, m in marea_descargar(spots, start, end, warnings).items():
-            res[sid]['marea'] = compacta(m['marea'], k0, k1)
-            res[sid]['seaCell']['mar'] = m['marea']['celdaKm']
-            if SUMAR_MAREA:
-                for t, (kmh, rumbo, _, _) in m['horas'].items():
-                    h = res[sid]['currents'].get(t)
-                    if h and h.get('glo') is not None:
-                        h['glo'], h['gloDir'] = suma_corrientes(h['glo'], h.get('gloDir'), kmh, rumbo)
-        print('  · marea')
+        marea_pool = ThreadPoolExecutor(max_workers=1)
+        marea_futura = marea_pool.submit(marea_descargar, spots, start, end, warnings)
 
     # Oleaje horario (14 oct, Luka: sin límite de llamadas y de la misma fuente oficial): MEDSEA (4,2 km) en el
     # Mediterráneo, IBI (2,8 km, también Canarias) y el global (9 km, cada 3 h) para lo que quede fuera.
@@ -494,6 +490,24 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     # Mediterráneo, frente al Kd490 oficial de 300 m, el error medio de visibilidad bajó de 2,0 m (4 km) a 1,4 m. El
     # producto se abre una vez y se lee una ventana pequeña por spot; los de 4 km quedan de respaldo (va después: gana).
     olci300(spots, res, sat0, t1, warnings)
+    if marea_futura is not None:
+        from marea import compacta
+        k0, k1 = start.strftime('%Y-%m-%dT%H:00'), end.strftime('%Y-%m-%dT%H:00')
+        try:
+            mareas = marea_futura.result()
+        except Exception as e:  # noqa: BLE001 — sin marea, la previsión sale igual que antes
+            warnings.append(f'Marea: {type(e).__name__} {str(e)[:160]}')
+            mareas = {}
+        marea_pool.shutdown()
+        for sid, m in mareas.items():
+            res[sid]['marea'] = compacta(m['marea'], k0, k1)
+            res[sid]['seaCell']['mar'] = m['marea']['celdaKm']
+            if SUMAR_MAREA:
+                for t, (kmh, rumbo, _, _) in m['horas'].items():
+                    h = res[sid]['currents'].get(t)
+                    if h and h.get('glo') is not None:
+                        h['glo'], h['gloDir'] = suma_corrientes(h['glo'], h.get('gloDir'), kmh, rumbo)
+        print(f'  · marea ({len(mareas)} spots)')
     return res
 
 
