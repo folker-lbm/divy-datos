@@ -39,6 +39,9 @@ def buoys(spots, now, warnings):
     except Exception as e:  # noqa: BLE001
         warnings.append(f'Boyas (Copernicus In Situ): {type(e).__name__} {str(e)[:120]}')
         return {}
+    # Sin boyas en la zona y el periodo, Copernicus devuelve una tabla sin columnas (8 nov: tumbó filipinas y sudeste).
+    if df.empty or 'platform_type' not in df.columns:
+        return {}
     # Solo boyas fondeadas (MO) y medidas buenas (QC 1 = buena).
     df = df[(df['platform_type'] == 'MO') & (df['value_qc'] == 1)]
     latest = {}
