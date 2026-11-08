@@ -47,7 +47,8 @@ jobs:
           - oceania norteamerica
           - caribe sudamerica
     name: prevision (${{ matrix.grupo }})
-    runs-on: ubuntu-latest
+    # Fijado a 24.04 (8 nov): ubuntu-latest pasó a 26.04, que no tiene Python 3.9, y la completa de las 4:10 falló entera.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

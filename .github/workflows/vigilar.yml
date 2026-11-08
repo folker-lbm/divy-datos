@@ -16,7 +16,7 @@ on:
 jobs:
   latido:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 */3 * * *'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: El vigilante del Worker ha corrido en la última hora
         run: |
@@ -35,7 +35,7 @@ jobs:
 
   retirada:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 8 * * 1'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
