@@ -595,8 +595,9 @@ COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'c
 # además, «cGlo» pasa a ser la corriente global más la de marea (suma de vectores), solo donde manda el global: los
 # regionales europeos ya llevan la marea dentro. Comparado con IBI, que sí la lleva, sumarla baja el error de 0,70 a
 # 0,40 km/h (mediana de 29 spots). No hay columnas nuevas: con ellas la previsión crecía un 45 % comprimida; así, un 15 %.
-# Con datos/corriente-spots.json (calculado una vez, ver docs/T124 del repositorio de la app), cada spot lleva también
-# «corr»: la confianza calculada de la corriente, sus motivos y la corriente habitual del spot (percentiles de un año).
+# La confianza calculada y la corriente habitual de cada spot (datos/corriente-spots.json, calculado una vez, ver
+# docs/T124 del repositorio de la app) van en el catálogo, no en la previsión: las publica publicar_corriente.py (8 nov).
+# Los eventos de la marea sí van aquí, pero la API los separa de la compacta y la app los pide al abrir la ficha.
 MAREA = os.environ.get('DIVY_MAREA') == '1'
 SUMAR_MAREA = os.environ.get('DIVY_SUMAR_MAREA') == '1'
 CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.json'
@@ -653,7 +654,6 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
     """Previsión que usa la app: columnas horarias (Open-Meteo + corriente de Copernicus), perfiles y satélite."""
     n = int((end - start).total_seconds() // 3600) + 1
     keys = [(start + timedelta(hours=i)).strftime('%Y-%m-%dT%H:00') for i in range(n)]
-    corr = json.loads(CORRIENTE_SPOTS.read_text()) if MAREA and CORRIENTE_SPOTS.exists() else {}
     out_spots = {}
     for sid in spots:
         c = cop.get('spots', {}).get(sid, {})
@@ -686,8 +686,6 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
             # inicio de la ventana.
             desde = max(keys[0], (now - timedelta(hours=24)).strftime('%Y-%m-%dT%H:00'))
             out_spots[sid]['marea'] = recorta(c['marea'], desde, keys[-1], base=start)
-        if corr.get(sid):
-            out_spots[sid]['corr'] = corr[sid]
         if alerts and alerts.get(sid):
             out_spots[sid]['alerts'] = alerts[sid]
         if buoy and buoy.get(sid):
