@@ -14,7 +14,9 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline import api_request
+# El flujo lo ejecuta con «python -I», que no mira la carpeta del script: pipeline.py está en la misma.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pipeline import api_request  # noqa: E402
 
 STAGING = 'https://divy-staging.divy-api.workers.dev'
 DATOS = Path(__file__).parent / 'datos/corriente-spots.json'
