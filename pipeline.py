@@ -292,7 +292,7 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     if direct:
         print('Copernicus: lectura directa (servidor de acceso caído)')
 
-    res = {sid: {'currents': {}, 'waves': {}, 'profiles': [], 'seaCell': {}, 'satellite': [], 'hr': [], 'marea': None} for sid in spots}
+    res = {sid: {'currents': {}, 'waves': {}, 'profiles': [], 'seaCell': {}, 'satellite': [], 'hr': []} for sid in spots}
     t0, t1 = start.strftime('%Y-%m-%dT%H:00:00'), end.strftime('%Y-%m-%dT%H:00:00')
     s0 = (start - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00')
     sat0 = (sat_start or start - timedelta(days=1)).strftime('%Y-%m-%dT00:00:00')
@@ -491,8 +491,6 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     # producto se abre una vez y se lee una ventana pequeña por spot; los de 4 km quedan de respaldo (va después: gana).
     olci300(spots, res, sat0, t1, warnings)
     if marea_futura is not None:
-        from marea import compacta
-        k0, k1 = start.strftime('%Y-%m-%dT%H:00'), end.strftime('%Y-%m-%dT%H:00')
         try:
             mareas = marea_futura.result()
         except Exception as e:  # noqa: BLE001 — sin marea, la previsión sale igual que antes
@@ -500,8 +498,6 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
             mareas = {}
         marea_pool.shutdown()
         for sid, m in mareas.items():
-            res[sid]['marea'] = compacta(m['marea'], k0, k1)
-            res[sid]['seaCell']['mar'] = m['marea']['celdaKm']
             if SUMAR_MAREA:
                 for t, (kmh, rumbo, _, _) in m['horas'].items():
                     h = res[sid]['currents'].get(t)
@@ -591,13 +587,14 @@ SOURCES = {
 # un objeto por hora, que con 500 spots no se podía descargar al abrir la app.
 COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'cGlo', 'cDir', 'cOm', 'sst')
 # Marea (T124, fase 2; en prueba: sin el OK de Luka no se publica). Con DIVY_MAREA=1, el modo completo descarga la marea
-# de Copernicus (marea.py) y cada spot lleva su ritmo en «marea», compacto (marea.compacta). Con DIVY_SUMAR_MAREA=1,
+# de Copernicus (marea.py). Con DIVY_SUMAR_MAREA=1,
 # además, «cGlo» pasa a ser la corriente global más la de marea (suma de vectores), solo donde manda el global: los
 # regionales europeos ya llevan la marea dentro. Comparado con IBI, que sí la lleva, sumarla baja el error de 0,70 a
 # 0,40 km/h (mediana de 29 spots). No hay columnas nuevas: con ellas la previsión crecía un 45 % comprimida; así, un 15 %.
 # La confianza calculada y la corriente habitual de cada spot (datos/corriente-spots.json, calculado una vez, ver
 # docs/T124 del repositorio de la app) van en el catálogo, no en la previsión: las publica publicar_corriente.py (8 nov).
-# Los eventos de la marea sí van aquí, pero la API los separa de la compacta y la app los pide al abrir la ficha.
+# Las horas de pleamar, bajamar y repunte no se publican (Luka, 9 nov: la marea mejora el color y el texto que ya hay;
+# la ficha no gana datos nuevos). Con eso, la compacta pesa un 2–9 % más que sin marea, solo por la corriente sumada.
 MAREA = os.environ.get('DIVY_MAREA') == '1'
 SUMAR_MAREA = os.environ.get('DIVY_SUMAR_MAREA') == '1'
 CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.json'
@@ -680,12 +677,6 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
             for k in COLUMNS:
                 cols[k].append(vals.get(k))
         out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
-        if c.get('marea'):
-            from marea import recorta
-            # Solo desde 24 h antes de ahora (la ficha no enseña repuntes más viejos), con la hora en minutos desde el
-            # inicio de la ventana.
-            desde = max(keys[0], (now - timedelta(hours=24)).strftime('%Y-%m-%dT%H:00'))
-            out_spots[sid]['marea'] = recorta(c['marea'], desde, keys[-1], base=start)
         if alerts and alerts.get(sid):
             out_spots[sid]['alerts'] = alerts[sid]
         if buoy and buoy.get(sid):
@@ -868,8 +859,7 @@ def main():
         with_data = sum(1 for v in cop_spots.values() if v['currents'] or v['profiles'])  # 0 si no se pudo ni empezar
         if with_data >= 0.5 * len(spots):
             cop = {'generatedAt': iso(now), 'warnings': list(warnings), 'spots': {sid: {
-                'seaCell': v['seaCell'], 'currents': v['currents'], 'waves': v['waves'], 'profiles': v['profiles'], 'satellite': v['satellite'], 'hr': v['hr'],
-                **({'marea': v['marea']} if v.get('marea') else {})} for sid, v in cop_spots.items()}}
+                'seaCell': v['seaCell'], 'currents': v['currents'], 'waves': v['waves'], 'profiles': v['profiles'], 'satellite': v['satellite'], 'hr': v['hr']} for sid, v in cop_spots.items()}}
             fresh_cop = True
         else:
             # Fiabilidad (Luka, 13 oct): si Copernicus falla (p. ej. caída de su servidor de acceso), no se publica una
