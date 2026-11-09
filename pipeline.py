@@ -915,10 +915,9 @@ def main():
             # España sigue en «actual» (la app anterior la lee de /api/prevision).
             publish(args.publicar, 'actual' if r == 'es' else f'actual-{r}', snapshots[r])
     print(f'Tiempo total: {(time.time() - t_start) / 60:.1f} min')
-    if args.modo == 'completo' and stalled and not args.muestra:
-        # La previsión ya está publicada; el trabajo sale en rojo para que se vea (GitHub avisa por correo de los fallos),
-        # como la vigilancia semanal de Copernicus. Antes el satélite se quedaba vacío en silencio (3 nov).
-        sys.exit(f'Satélite parado: {"; ".join(stalled)}')
+    # Un satélite parado ya no pone el trabajo en rojo (9 nov): sale como advertencia («::warning::» más arriba) y lo
+    # sigue el vigilante del Worker («Satélite», un solo correo si pasa de 4 días). Así el rojo y el correo de GitHub
+    # quedan solo para fallos de verdad.
 
 
 if __name__ == '__main__':

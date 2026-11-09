@@ -4,6 +4,9 @@
 #   · DIVY_FORECAST_TOKEN: token de publicación (el mismo que FORECAST_TOKEN en los Workers).
 #   · EARTHDATA_USERNAME y EARTHDATA_PASSWORD: cuenta gratuita de NASA Earthdata para PACE (opcional; sin ella se omite).
 name: Previsión
+# El título de cada ejecución lleva el modo (9 nov): el vigilante del Worker (api/src/salud.ts) da crítico en el acto si
+# falla una completa, y aviso si falla una de oleaje y viento.
+run-name: "Previsión ${{ inputs.modo || 'completo' }}${{ inputs.pruebas && ' (pruebas)' || '' }}"
 
 on:
   # Sin «schedule» (15 oct): lo lanza solo el temporizador del Worker de Divy (api/src/cron.ts), que es puntual y avisa si
