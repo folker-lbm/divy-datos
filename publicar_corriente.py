@@ -4,6 +4,9 @@ clave «corriente-<región>» por región. La API la une al catálogo de esa reg
 Uso:    python -I publicar_corriente.py                 (pruebas, divy-staging; así lo lanza el flujo Experimento)
         python -I publicar_corriente.py https://joindivy.com   (producción: solo con el OK de Luka)
 Necesita DIVY_FORECAST_TOKEN. Deja un resumen en salida/corriente.json.
+
+Solo se publica una región si su corriente ha cambiado (Luka, 9 nov): cada publicación cambia la fecha del catálogo y
+la app vuelve a descargarlo. Lo habitual se recalcula una vez al año, no con cada previsión.
 """
 import json
 import sys
@@ -32,6 +35,14 @@ def main():
     resumen = {'base': base, 'generatedAt': stamp, 'regiones': {}}
     for r, spots in sorted(por_region.items()):
         body = json.dumps({'generatedAt': stamp, 'region': r, 'spots': spots}, ensure_ascii=False, separators=(',', ':')).encode()
+        try:
+            antes = json.loads(api_request(base, f'corriente-{r}')).get('spots')
+        except Exception:  # noqa: BLE001 — aún no publicada
+            antes = None
+        if antes == spots:
+            print(f'  · «corriente-{r}»: sin cambios, no se publica')
+            resumen['regiones'][r] = {'corriente': len(spots), 'sinCambios': True}
+            continue
         api_request(base, f'corriente-{r}', 'PUT', body)
         # Comprobación: el catálogo que descarga la app ya la lleva.
         req = urllib.request.Request(f'{base}/api/catalogo/{r}', headers={'User-Agent': 'divy-t124'})
