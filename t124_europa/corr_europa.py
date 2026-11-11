@@ -21,6 +21,9 @@ marea fuerte (Tarifa, Scapa Flow, Dover, Port-Cros…) se bucea en el repunte y 
 impide bucear: sin tope, 3,5 km/h saldría en verde. Con el tope, la corriente del modelo de 2 km/h o más nunca sale en
 verde en Europa (sale amarillo, nunca rojo). Solo en los datos: el motor y el resto del mundo no cambian. El p90 sin
 tope queda en `por` como ['tope', p90].
+Rojo (Luka, 11 nov, revalidación): `rojo: 3.7` (2 nudos) en los spots europeos con lo habitual de los modelos
+regionales. El motor lo lee si existe: desde esa corriente, rojo, y los reportes no lo bajan. Sin el campo, como antes
+(la corriente sola nunca pone rojo). Los 16 que usan el global siguen la regla de fuera de Europa, sin `rojo`.
 Sin ningún modelo regional a 3 km o menos, la app no usa la corriente del modelo: el spot queda sin `hab`.
 """
 import json
@@ -32,6 +35,7 @@ PASO_KM, ESTRECHO_KM = 3.0, 9.0
 VECINAS_X, VECINAS_MIN = 4.0, 1.5
 MAR_PCT = 67
 TOPE_P90 = 1.9
+ROJO = 3.7  # 2 nudos: desde aquí la corriente del modelo pone rojo en Europa (revalidación, Luka 11 nov)
 
 
 def confianza(d, geo, cala):
@@ -86,7 +90,7 @@ def main():
         if p90 < t['90']:
             por.append(['tope', t['90']])
             cuenta['tope'] += 1
-        e = {'conf': conf, 'por': por, 'hab': [min(t['50'], p90), p90, max(t['98'], p90)], 'clase': clase(t['90'])}
+        e = {'conf': conf, 'por': por, 'hab': [min(t['50'], p90), p90, max(t['98'], p90)], 'clase': clase(t['90']), 'rojo': ROJO}
         nuevo[sid] = e
         europa[sid] = {**e, 'modelos': d['modelos'], 'celdas': d['celdas'], 'antes': antes.get(sid)}
         cuenta['conf-' + conf] += 1
