@@ -13,8 +13,14 @@ Confianza (las mismas ideas que propuesta.confianza de divy-datos, medidas en la
            pasa de 1,5 km/h (un paso o una punta que el modelo no resuelve bien);
   media  · tierra: menos de 6 de las 9 celdas alrededor del spot son mar en el modelo;
          · estrecho: el agua frente al spot mide de 3 a 9 km;
-         · celda: la celda de mar del modelo está a más de media celda del spot (el spot queda fuera de ella: calas y
-           bahías donde el modelo ve el mar de fuera).
+         · celda: la celda de mar del modelo está a más de media celda del spot (el spot queda fuera de ella: bahías
+           donde el modelo ve el mar de fuera). En las calas (sin openWater) cuenta como baja (Luka, 11 nov): la
+           corriente de fuera puede no entrar, y así dos buceadores deciden el color.
+Tope (Luka, 11 nov, validación crítica): en Europa el p90 de lo habitual se limita a TOPE_P90 km/h. En los spots de
+marea fuerte (Tarifa, Scapa Flow, Dover, Port-Cros…) se bucea en el repunte y su corriente «normal» es justo la que
+impide bucear: sin tope, 3,5 km/h saldría en verde. Con el tope, la corriente del modelo de 2 km/h o más nunca sale en
+verde en Europa (sale amarillo, nunca rojo). Solo en los datos: el motor y el resto del mundo no cambian. El p90 sin
+tope queda en `por` como ['tope', p90].
 Sin ningún modelo regional a 3 km o menos, la app no usa la corriente del modelo: el spot queda sin `hab`.
 """
 import json
@@ -25,9 +31,10 @@ A = Path('/Volumes/MacExt/Divy-cache/T124/europa')  # carpeta de trabajo: catál
 PASO_KM, ESTRECHO_KM = 3.0, 9.0
 VECINAS_X, VECINAS_MIN = 4.0, 1.5
 MAR_PCT = 67
+TOPE_P90 = 1.9
 
 
-def confianza(d, geo):
+def confianza(d, geo, cala):
     baja, media = [], []
     an = (geo or {}).get('anchuraKm')
     if an is not None and an < PASO_KM:
@@ -44,7 +51,7 @@ def confianza(d, geo):
         media.append(['estrecho', an])
     fuera = max((c['km'] / c['celdaKm'] for c in d['celdas'].values()), default=0)
     if fuera > 0.5:
-        media.append(['celda', round(max(c['km'] for c in d['celdas'].values()), 1)])
+        (baja if cala else media).append(['celda', round(max(c['km'] for c in d['celdas'].values()), 1)])
     return ('b' if baja else 'm' if media else 'a'), baja + media
 
 
@@ -74,8 +81,12 @@ def main():
             cuenta['sinSerie'] += 1
             continue
         t = d['total']
-        conf, por = confianza(d, geo.get(sid))
-        e = {'conf': conf, 'por': por, 'hab': [t['50'], t['90'], t['98']], 'clase': clase(t['90'])}
+        conf, por = confianza(d, geo.get(sid), not OPEN.get(sid, False))
+        p90 = min(t['90'], TOPE_P90)
+        if p90 < t['90']:
+            por.append(['tope', t['90']])
+            cuenta['tope'] += 1
+        e = {'conf': conf, 'por': por, 'hab': [min(t['50'], p90), p90, max(t['98'], p90)], 'clase': clase(t['90'])}
         nuevo[sid] = e
         europa[sid] = {**e, 'modelos': d['modelos'], 'celdas': d['celdas'], 'antes': antes.get(sid)}
         cuenta['conf-' + conf] += 1
@@ -83,6 +94,9 @@ def main():
     (A / 'salida/corr-europa.json').write_text(json.dumps(europa, ensure_ascii=False))
     print(dict(cuenta), Counter(k for e in europa.values() for k, _ in e.get('por', [])))
 
+
+# Mar abierto según el catálogo de cada región (las calas son los spots sin openWater).
+OPEN = {s['id']: bool(s.get('openWater')) for r in ('es', 'med', 'eu') for s in json.loads((A / f'cat/{r}.json').read_text())['spots']}
 
 # Spots europeos que usan la corriente global (sin regional cerca y con el global a 10 km o menos en la previsión).
 GLO = set()

@@ -30,7 +30,7 @@ for (const [r, files] of Object.entries(PREV)) {
   }
   const porPrev = {};
   for (const [t, f] of horas) (porPrev[f] ??= []).push(t);
-  const t = (res[r] = { spots: cat.length, horas: 0, horasDia: 0, cambian: 0, horasCambian: 0, horasCambianDia: 0, trans: {}, transDia: {}, confCambia: 0, dias: [Math.min(...horas.keys()), Math.max(...horas.keys())].map((x) => new Date(x).toISOString()) });
+  const t = (res[r] = { spots: cat.length, horas: 0, horasDia: 0, cambian: 0, horasCambian: 0, horasCambianDia: 0, trans: {}, transDia: {}, confCambia: 0, verde2Antes: 0, verde2Despues: 0, dias: [Math.min(...horas.keys()), Math.max(...horas.keys())].map((x) => new Date(x).toISOString()) });
   const cambiaSpot = new Set();
   for (const [f, ts] of Object.entries(porPrev)) {
     const p = JSON.parse(fs.readFileSync(f, 'utf8'));
@@ -47,6 +47,9 @@ for (const [r, files] of Object.entries(PREV)) {
         t.horas++;
         if (!a.night) t.horasDia++;
         if (a.confidence !== b.confidence) t.confCambia++;
+        // Verde con la corriente del modelo de 2 km/h o más (lo que el tope de Europa evita).
+        if (a.level === 'buena' && (a.current?.mean ?? 0) >= 2) t.verde2Antes++;
+        if (b.level === 'buena' && (b.current?.mean ?? 0) >= 2) { t.verde2Despues++; const k = (europa[s.id]?.hab ? 'hab' : corrNuevo[s.id]?.hab ? 'habGlobal' : 'sinHab') + (s.openWater ? '-abierto' : '-cala'); t.verde2Por = t.verde2Por ?? {}; t.verde2Por[k] = (t.verde2Por[k] ?? 0) + 1; }
         if (a.level === b.level) continue;
         const k = `${a.level}→${b.level}`;
         t.horasCambian++; t.trans[k] = (t.trans[k] ?? 0) + 1;
