@@ -1,0 +1,13 @@
+# T124 en Europa (10–11 nov 2026)
+
+Lo habitual de la corriente (`hab`) y su confianza (`conf`) de los spots europeos con los mismos modelos regionales que
+la previsión (MEDSEA, IBI, noroeste europeo, Báltico y mar Negro), para que el motor compare con lo habitual en todo el
+mundo con un solo camino. Informe completo: `docs/T124-EUROPA.md` del repositorio de la app (rama `t124-europa`).
+
+Orden (en local; los datos pesados van a /Volumes/MacExt/Divy-cache/T124/europa):
+1. `habitual_europa.py --solo med` (y `ibi`, `nws`, `bal,blk`): un año de corriente a ~10 m en la celda de la previsión.
+2. `combinar.py`: une los modelos (media de MEDSEA e IBI donde la app usa los dos).
+3. `corr_europa.py`: confianza en la malla regional y `datos/corriente-spots.json` con los spots europeos sustituidos.
+4. `medir.mjs`, `conf.mjs` y `anual.py`: efecto en el color (previsiones reales y un año del factor de corriente).
+
+`datos/corriente-spots.json` lo publica `publicar_corriente.py` como siempre (solo con el OK de Luka).
