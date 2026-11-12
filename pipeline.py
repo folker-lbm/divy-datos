@@ -365,6 +365,20 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     each_zone('corrientes mar Negro', 'cmems_mod_blk_phy-cur_anfc_2.5km_PT1H-m', {'blk'}, currents('reg'), **cur)
     each_zone('corrientes global', 'cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i', {'glo'}, currents('glo'), **cur)
 
+    # Marea de Copernicus (T124, fase 2): corriente de marea hora a hora y su ritmo (pleamar, bajamar, repuntes, vivas o
+    # muertas) en todos los spots. El global de arriba no la lleva; los regionales europeos, sí.
+    # Se guarda poco (staging, 7 nov: con la marea hora a hora la parte de Copernicus de España pasaba de 11,5 a 14,9 MB,
+    # y el límite de una clave es 25 MB): el ritmo, compacto, y la suma ya hecha en la corriente global.
+    # La descarga va en paralelo con el oleaje, la temperatura y el satélite (staging, 7 nov: en serie, el grupo de Europa,
+    # África y el mar Rojo pasaba de unos 22 a 37 minutos); se aplica al final, cuando ya está la corriente global.
+    marea_futura = None
+    if MAREA:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from marea import descargar as marea_descargar
+        marea_pool = ThreadPoolExecutor(max_workers=1)
+        marea_futura = marea_pool.submit(marea_descargar, spots, start, end, warnings)
+
     # Oleaje horario (14 oct, Luka: sin límite de llamadas y de la misma fuente oficial): MEDSEA (4,2 km) en el
     # Mediterráneo, IBI (2,8 km, también Canarias) y el global (9 km, cada 3 h) para lo que quede fuera.
     def waves(tag):
@@ -476,6 +490,24 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     # Mediterráneo, frente al Kd490 oficial de 300 m, el error medio de visibilidad bajó de 2,0 m (4 km) a 1,4 m. El
     # producto se abre una vez y se lee una ventana pequeña por spot; los de 4 km quedan de respaldo (va después: gana).
     olci300(spots, res, sat0, t1, warnings)
+    if marea_futura is not None:
+        try:
+            mareas = marea_futura.result()
+        except Exception as e:  # noqa: BLE001 — sin marea, la previsión sale igual que antes
+            warnings.append(f'Marea: {type(e).__name__} {str(e)[:160]}')
+            mareas = {}
+        marea_pool.shutdown()
+        for sid, m in mareas.items():
+            if SUMAR_MAREA:
+                for t, (kmh, rumbo, _, _) in m['horas'].items():
+                    h = res[sid]['currents'].get(t)
+                    if h and h.get('glo') is not None:
+                        v, r = suma_corrientes(h['glo'], h.get('gloDir'), kmh, rumbo)
+                        # Un decimal y el rumbo cada 5°: con la marea la corriente cambia cada hora y comprime peor; así
+                        # la previsión compacta de sudeste pasa de 565 a unos 500 KB (staging, 7 nov). La app redondea igual.
+                        h['glo'] = None if v is None else round(v, 1)
+                        h['gloDir'] = None if r is None else (round(r / 5) * 5) % 360
+        print(f'  · marea ({len(mareas)} spots)')
     return res
 
 
@@ -554,6 +586,18 @@ SOURCES = {
 # Columnas por spot, alineadas al eje horario común (window.from + i horas). Formato v4: unas 7 veces más pequeño que
 # un objeto por hora, que con 500 spots no se podía descargar al abrir la app.
 COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'cGlo', 'cDir', 'cOm', 'sst')
+# Marea (T124, fase 2; en prueba: sin el OK de Luka no se publica). Con DIVY_MAREA=1, el modo completo descarga la marea
+# de Copernicus (marea.py). Con DIVY_SUMAR_MAREA=1,
+# además, «cGlo» pasa a ser la corriente global más la de marea (suma de vectores), solo donde manda el global: los
+# regionales europeos ya llevan la marea dentro. Comparado con IBI, que sí la lleva, sumarla baja el error de 0,70 a
+# 0,40 km/h (mediana de 29 spots). No hay columnas nuevas: con ellas la previsión crecía un 45 % comprimida; así, un 15 %.
+# La confianza calculada y la corriente habitual de cada spot (datos/corriente-spots.json, calculado una vez, ver
+# docs/T124 del repositorio de la app) van en el catálogo, no en la previsión: las publica publicar_corriente.py (8 nov).
+# Las horas de pleamar, bajamar y repunte no se publican (Luka, 9 nov: la marea mejora el color y el texto que ya hay;
+# la ficha no gana datos nuevos). Con eso, la compacta pesa un 2–9 % más que sin marea, solo por la corriente sumada.
+MAREA = os.environ.get('DIVY_MAREA') == '1'
+SUMAR_MAREA = os.environ.get('DIVY_SUMAR_MAREA') == '1'
+CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.json'
 
 
 # Visibilidad estimada (m) a partir de cada medida. Provisional: se calibra con los reportes (backtest, REGLAS v0.5).
@@ -594,6 +638,15 @@ def clarity(c):
     return out
 
 
+def suma_corrientes(a, a_dir, b, b_dir):
+    """Suma de dos corrientes dadas como velocidad (km/h) y rumbo (grados hacia donde van): (velocidad, rumbo)."""
+    if a_dir is None:
+        return a, a_dir
+    u = a * math.sin(math.radians(a_dir)) + b * math.sin(math.radians(b_dir))
+    v = a * math.cos(math.radians(a_dir)) + b * math.cos(math.radians(b_dir))
+    return clean(math.hypot(u, v)), clean((math.degrees(math.atan2(u, v)) + 360) % 360, 0)
+
+
 def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, prev_wind=None):
     """Previsión que usa la app: columnas horarias (Open-Meteo + corriente de Copernicus), perfiles y satélite."""
     n = int((end - start).total_seconds() // 3600) + 1
@@ -618,6 +671,7 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
                 row.update(hs=best[0], dir=best[1], tp=best[2])
             cur = c.get('currents', {}).get(t, {})
             # Dirección: la del modelo más fino disponible (MEDSEA en el Mediterráneo, si no IBI, si no el global).
+            # Con DIVY_SUMAR_MAREA, «glo» ya viene con la marea sumada (copernicus()).
             c_dir = next((cur.get(k + 'Dir') for k in ('med', 'ibi', 'reg', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
             vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': cur.get('glo'), 'cDir': c_dir}
             for k in COLUMNS:

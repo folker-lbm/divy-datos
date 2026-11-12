@@ -28,6 +28,10 @@ on:
         description: 'solo en pruebas (divy-staging): lee de allí los spots, p. ej. con el catálogo mundial, y publica solo allí'
         type: boolean
         default: false
+      marea:
+        description: 'T124, en prueba: marea de Copernicus sumada a la corriente global (solo con «pruebas»)'
+        type: boolean
+        default: false
 
 # Nunca dos ejecuciones a la vez: la de Open-Meteo depende de la parte de Copernicus de la última completa. Las de
 # pruebas van en su propia cola (3 nov): en la común, una pendiente de pruebas podía cancelar la pendiente de producción.
@@ -73,6 +77,9 @@ jobs:
           DIVY_FORECAST_TOKEN: ${{ secrets.DIVY_FORECAST_TOKEN }}
           EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
           EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+          # T124 (7 nov): la marea solo se enciende en pruebas; producción sigue igual hasta el OK de Luka.
+          DIVY_MAREA: ${{ (inputs.pruebas && inputs.marea) && '1' || '' }}
+          DIVY_SUMAR_MAREA: ${{ (inputs.pruebas && inputs.marea) && '1' || '' }}
         run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" --regiones ${{ matrix.grupo }} --cupo-om 200 ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
       - name: Avisos del proceso
         if: always()
