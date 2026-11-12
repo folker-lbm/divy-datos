@@ -29,7 +29,7 @@ on:
         type: boolean
         default: false
       marea:
-        description: 'T124, en prueba: marea de Copernicus sumada a la corriente global (solo con «pruebas»)'
+        description: 'T124: marea de Copernicus sumada a la corriente global (solo con «pruebas»; en producción la enciende la variable DIVY_MAREA)'
         type: boolean
         default: false
 
@@ -77,9 +77,13 @@ jobs:
           DIVY_FORECAST_TOKEN: ${{ secrets.DIVY_FORECAST_TOKEN }}
           EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
           EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
-          # T124 (7 nov): la marea solo se enciende en pruebas; producción sigue igual hasta el OK de Luka.
-          DIVY_MAREA: ${{ (inputs.pruebas && inputs.marea) && '1' || '' }}
-          DIVY_SUMAR_MAREA: ${{ (inputs.pruebas && inputs.marea) && '1' || '' }}
+          # T124, marea fuera de Europa (arreglo 1 de T144, 12 nov). Interruptor: la variable del repositorio DIVY_MAREA.
+          # Apagada (sin la variable), como hasta ahora: la marea solo en pruebas con la casilla «marea». Se enciende el
+          # mismo día que se publique la app 1.2, con el OK de Luka: «gh variable set DIVY_MAREA --body 1 -R
+          # folker-lbm/divy-datos» y una completa a mano (las de Open-Meteo reutilizan la parte de Copernicus de la última
+          # completa). Se apaga con «gh variable delete DIVY_MAREA -R folker-lbm/divy-datos» y otra completa.
+          DIVY_MAREA: ${{ ((inputs.pruebas && inputs.marea) || vars.DIVY_MAREA == '1') && '1' || '' }}
+          DIVY_SUMAR_MAREA: ${{ ((inputs.pruebas && inputs.marea) || vars.DIVY_MAREA == '1') && '1' || '' }}
         run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" --regiones ${{ matrix.grupo }} --cupo-om 200 ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
       - name: Avisos del proceso
         if: always()
