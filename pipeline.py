@@ -505,8 +505,10 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
                         v, r = suma_corrientes(h['glo'], h.get('gloDir'), kmh, rumbo)
                         # Un decimal y el rumbo cada 5°: con la marea la corriente cambia cada hora y comprime peor; así
                         # la previsión compacta de sudeste pasa de 565 a unos 500 KB (staging, 7 nov). La app redondea igual.
-                        h['glo'] = None if v is None else round(v, 1)
-                        h['gloDir'] = None if r is None else (round(r / 5) * 5) % 360
+                        # Aparte de «glo» (arreglo 9 de T144, 12 nov): la app 1.1 lee «cGlo» con su regla fija y, con la
+                        # marea dentro, su ficha cambiaría sola. Solo el motor de la 1.2 lee «cMar» y «cMarDir».
+                        h['mar'] = None if v is None else round(v, 1)
+                        h['marDir'] = None if r is None else (round(r / 5) * 5) % 360
         print(f'  · marea ({len(mareas)} spots)')
     return res
 
@@ -585,10 +587,11 @@ SOURCES = {
 
 # Columnas por spot, alineadas al eje horario común (window.from + i horas). Formato v4: unas 7 veces más pequeño que
 # un objeto por hora, que con 500 spots no se podía descargar al abrir la app.
-COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'cGlo', 'cDir', 'cOm', 'sst')
+COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'cGlo', 'cDir', 'cMar', 'cMarDir', 'cOm', 'sst')
 # Marea (T124, fase 2; en prueba: sin el OK de Luka no se publica). Con DIVY_MAREA=1, el modo completo descarga la marea
 # de Copernicus (marea.py). Con DIVY_SUMAR_MAREA=1,
-# además, «cGlo» pasa a ser la corriente global más la de marea (suma de vectores), solo donde manda el global: los
+# además, «cMar» es la corriente global más la de marea (suma de vectores) y «cMarDir» su rumbo, en columnas aparte de
+# «cGlo» para que la app 1.1 no cambie (arreglo 9 de T144, 12 nov), solo donde manda el global: los
 # regionales europeos ya llevan la marea dentro. Comparado con IBI, que sí la lleva, sumarla baja el error de 0,70 a
 # 0,40 km/h (mediana de 29 spots). No hay columnas nuevas: con ellas la previsión crecía un 45 % comprimida; así, un 15 %.
 # La confianza calculada y la corriente habitual de cada spot (datos/corriente-spots.json, calculado una vez, ver
@@ -671,9 +674,10 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
                 row.update(hs=best[0], dir=best[1], tp=best[2])
             cur = c.get('currents', {}).get(t, {})
             # Dirección: la del modelo más fino disponible (MEDSEA en el Mediterráneo, si no IBI, si no el global).
-            # Con DIVY_SUMAR_MAREA, «glo» ya viene con la marea sumada (copernicus()).
+            # Con DIVY_SUMAR_MAREA, «mar» trae la global con la marea sumada (copernicus()); «glo» y su rumbo, como siempre.
             c_dir = next((cur.get(k + 'Dir') for k in ('med', 'ibi', 'reg', 'glo') if cur.get(k) is not None), row.get('cOmDir'))
-            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': cur.get('glo'), 'cDir': c_dir}
+            vals = {**row, 'cMed': cur.get('med'), 'cIbi': cur.get('ibi'), 'cReg': cur.get('reg'), 'cGlo': cur.get('glo'), 'cDir': c_dir,
+                    'cMar': cur.get('mar'), 'cMarDir': cur.get('marDir')}
             for k in COLUMNS:
                 cols[k].append(vals.get(k))
         out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
