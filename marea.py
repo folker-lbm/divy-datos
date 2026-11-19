@@ -20,9 +20,16 @@ Qué se calcula en cada spot:
 Lo que no sabe: la fuerza dentro de un canal estrecho (celdas de 9 km). Da el ritmo y el sentido de la zona.
 """
 import math
+import os
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
+
+import marea_stofs
+
+# T149: de dónde sale la corriente de marea. Por defecto, Copernicus (FES2014, celdas de 9 km), como hasta ahora. Con
+# DIVY_MAREA_FUENTE=stofs, la de STOFS-2D-Global en los spots con constantes (marea_stofs.py); la altura sigue igual.
+FUENTE = os.environ.get('DIVY_MAREA_FUENTE', 'copernicus')
 
 DS_UV = 'cmems_mod_glo_phy_anfc_merged-uv_PT1H-i'
 DS_SL = 'cmems_mod_glo_phy_anfc_merged-sl_PT1H-i'
@@ -295,6 +302,9 @@ def descargar(spots, t0, t1, warnings, opener=None):
 
     t_ini = time.time()
     fases = fases_luna(t0, t1)
+    stofs = marea_stofs.cargar() if FUENTE == 'stofs' else None
+    if FUENTE == 'stofs' and stofs is None:
+        warnings.append('Marea: DIVY_MAREA_FUENTE=stofs sin datos/marea-stofs.json; se usa Copernicus')
     out = {}
     try:
         uv, sl = _abrir(DS_UV), _abrir(DS_SL)
@@ -343,6 +353,12 @@ def descargar(spots, t0, t1, warnings, opener=None):
             best = max(cand, key=lambda n: sm[n])
             k = ks[best]
             u, v = U[:, k].astype(float), V[:, k].astype(float)
+            fuente = 'copernicus'
+            if stofs is not None:  # T149: la corriente de marea de STOFS donde hay constantes buenas (marea_stofs.py)
+                p = marea_stofs.predecir(stofs, sid, times)
+                if p is not None:
+                    u, v = p
+                    fuente = 'stofs'
             h = None
             if H is not None:
                 hk = k if np.isfinite(H[0, k]) else None
@@ -354,6 +370,7 @@ def descargar(spots, t0, t1, warnings, opener=None):
             if info is None:
                 continue
             info['celdaKm'] = round(dists[best], 1)
+            info['fuente'] = fuente
             # ¿Ve el modelo el mar de aquí? Parte de las 9 celdas alrededor del spot que son mar en el modelo, y cuánto
             # cambia la marea entre las celdas de mar cercanas (a CELDA_MAX km): si una corre mucho y otra casi nada,
             # entre ellas hay un paso o una costa que el modelo no resuelve (Cauldron: 3,3 y 0,2 km/h).

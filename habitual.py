@@ -38,9 +38,11 @@ def _sel(ds, t0, t1, depth_m=None):
     return ds
 
 
-def calcula(spots, celdas_marea, t0, t1, workers=16):
+def calcula(spots, celdas_marea, t0, t1, workers=16, stofs=None):
     """{sid: {'total': {p: kmh}, 'marea': {…}, 'general': {…}, 'horas': n, 'celdaGeneral': (i, j)}}.
-    `spots`: {sid: (lat, lng)}; `celdas_marea`: {sid: (i, j)} de marea.py; t0, t1: datetime UTC."""
+    `spots`: {sid: (lat, lng)}; `celdas_marea`: {sid: (i, j)} de marea.py; t0, t1: datetime UTC.
+    `stofs` (T149): las constantes de marea_stofs.py; en los spots que las tienen buenas, la marea del año sale de ellas
+    en lugar de SMOC (lo mismo que hace marea.py con DIVY_MAREA_FUENTE=stofs), y la entrada lleva 'fuente': 'stofs'."""
     import dask
     import xarray as xr
 
@@ -75,8 +77,19 @@ def calcula(spots, celdas_marea, t0, t1, workers=16):
     pg, pm = {c: k for k, c in enumerate(ug)}, {c: k for k, c in enumerate(um)}
     pc = lambda x: {p: round(float(np.percentile(x, p)), 2) for p in PCTS}  # noqa: E731
     out = {}
+    fuente = {}
+    if stofs is not None:
+        from datetime import datetime, timezone
+
+        import marea_stofs
+        horas_m = [datetime.fromtimestamp(int(x), tz=timezone.utc) for x in tm]
     for sid, cm in celdas_marea.items():
         tu, tv = TU[:, pm[cm]], TV[:, pm[cm]]
+        if stofs is not None:
+            p = marea_stofs.predecir(stofs, sid, horas_m)
+            if p is not None:
+                tu, tv = p
+                fuente[sid] = 'stofs'
         if sid in celda_g:
             k = pg[celda_g[sid]]
             gu, gv = np.interp(tm, tg, GU[:, k]), np.interp(tm, tg, GV[:, k])  # 6 h → horas, como pipeline.py
@@ -88,4 +101,6 @@ def calcula(spots, celdas_marea, t0, t1, workers=16):
             continue
         out[sid] = {'total': pc(tot[ok]), 'marea': pc(mr[ok]), 'general': pc(ge[ok]), 'horas': int(ok.sum()),
                     'celdaGeneral': celda_g.get(sid)}
+        if sid in fuente:
+            out[sid]['fuente'] = fuente[sid]
     return out
