@@ -497,6 +497,20 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
             warnings.append(f'Marea: {type(e).__name__} {str(e)[:160]}')
             mareas = {}
         marea_pool.shutdown()
+        # T149 (capa 3): la marea de cada spot ajustada con sus reportes (desfase y fuerza; ajuste_reportes.py). Solo con
+        # DIVY_AJUSTE_REPORTES (el fichero de ajustes). En sombra, por defecto: guarda qué cambiaría y no toca la marea;
+        # con DIVY_AJUSTE_MODO=aplicar (OK de Luka), la cambia antes de sumarla. Si falla, la marea sale como siempre.
+        if AJUSTE_REPORTES and mareas:
+            try:
+                from ajuste_reportes import aplicar_a_mareas
+                ajustes = json.loads(Path(AJUSTE_REPORTES).read_text())
+                cambios = aplicar_a_mareas(mareas, ajustes, aplicar_de_verdad=AJUSTE_MODO == 'aplicar')
+                (Path(__file__).resolve().parent / 'salida').mkdir(exist_ok=True)
+                (Path(__file__).resolve().parent / 'salida' / 'ajuste-sombra.json').write_text(json.dumps(
+                    {'modo': AJUSTE_MODO, 'spots': cambios}, ensure_ascii=False, indent=1))
+                print(f'  · ajuste por reportes ({AJUSTE_MODO}): {len(cambios)} spots')
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f'Ajuste por reportes: {type(e).__name__} {str(e)[:160]}')
         for sid, m in mareas.items():
             if SUMAR_MAREA:
                 for t, (kmh, rumbo, _, _) in m['horas'].items():
@@ -600,6 +614,9 @@ COLUMNS = ('hs', 'dir', 'tp', 'wind', 'gust', 'wdir', 'cMed', 'cIbi', 'cReg', 'c
 # la ficha no gana datos nuevos). Con eso, la compacta pesa un 2–9 % más que sin marea, solo por la corriente sumada.
 MAREA = os.environ.get('DIVY_MAREA') == '1'
 SUMAR_MAREA = os.environ.get('DIVY_SUMAR_MAREA') == '1'
+# T149: ajuste de la marea por spot con los reportes (ajuste_reportes.py). Sin la variable, nada cambia.
+AJUSTE_REPORTES = os.environ.get('DIVY_AJUSTE_REPORTES')
+AJUSTE_MODO = 'aplicar' if os.environ.get('DIVY_AJUSTE_MODO') == 'aplicar' else 'sombra'
 CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.json'
 
 
