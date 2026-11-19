@@ -55,8 +55,10 @@ class _HttpStore(MutableMapping):
 
 
 @lru_cache(maxsize=None)
-def _arco_url(dataset_id, part=None):
-    """URL del Zarr «por tiempo» (adecuado para recortar zonas) del dataset, desde el catálogo público."""
+def _arco_url(dataset_id, part=None, service='arco-geo-series'):
+    """URL del Zarr del dataset, desde el catálogo público. Por defecto, el guardado «por tiempo» (cada hora, el mapa
+    entero: adecuado para recortar zonas); con `service='arco-time-series'`, el guardado «por puntos» (muchas horas de
+    pocas celdas: adecuado para series largas en unos pocos puntos, como la marea de cada spot, marea.py)."""
     import copernicusmarine as cm
 
     info = cm.describe(dataset_id=dataset_id, disable_progress_bar=True)
@@ -66,7 +68,7 @@ def _arco_url(dataset_id, part=None):
                 if part and p.name != part:
                     continue
                 for s in p.services:
-                    if getattr(s.service_name, 'value', s.service_name) == 'arco-geo-series':
+                    if getattr(s.service_name, 'value', s.service_name) == service:
                         return s.uri
     raise RuntimeError(f'Sin ARCO para {dataset_id}')
 
