@@ -84,6 +84,11 @@ jobs:
           # completa). Se apaga con «gh variable delete DIVY_MAREA -R folker-lbm/divy-datos» y otra completa.
           DIVY_MAREA: ${{ ((inputs.pruebas && inputs.marea) || vars.DIVY_MAREA == '1') && '1' || '' }}
           DIVY_SUMAR_MAREA: ${{ ((inputs.pruebas && inputs.marea) || vars.DIVY_MAREA == '1') && '1' || '' }}
+          # T149: la corriente de marea de STOFS-2D-Global (marea_stofs.py) en lugar de la de Copernicus en los spots con
+          # constantes buenas. Interruptor: la variable del repositorio DIVY_MAREA_FUENTE («stofs»). Se enciende con
+          # «gh variable set DIVY_MAREA_FUENTE --body stofs -R folker-lbm/divy-datos» y una completa a mano; se apaga con
+          # «gh variable delete DIVY_MAREA_FUENTE -R folker-lbm/divy-datos» y otra completa (ver INFORME de T149).
+          DIVY_MAREA_FUENTE: ${{ vars.DIVY_MAREA_FUENTE }}
         run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" --regiones ${{ matrix.grupo }} --cupo-om 200 ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
       - name: Avisos del proceso
         if: always()
