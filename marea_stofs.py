@@ -5,8 +5,10 @@ de metros) en lugar de las celdas de 9 km de la marea de Copernicus. En el pilot
 oficiales de NOAA da la misma hora que Copernicus, pero más fuerza donde la costa la concentra y la mitad de «calma falsa»
 (ver Divy-cache/T149-reportes/INFORME.md).
 
-No se descarga cada día: de seis meses de STOFS se sacaron una vez las constantes de marea de la corriente de cada spot
-(datos/marea-stofs.json, análisis armónico con UTide). Con ellas se predice la marea de cualquier hora con numpy, sin
+No se descarga cada día: de tres meses de STOFS (del 18 ago al 24 nov 2026; los ficheros de antes vienen en NetCDF4 y no
+se leen a trozos) se sacaron una vez las constantes de marea de la corriente de cada spot (datos/marea-stofs.json,
+análisis armónico con UTide, con K2, P1 y NU2 inferidos). Los scripts que lo generan están en
+Divy-cache/T149-reportes/scripts (s1_nodos_mundo, s2_descarga, s3_constantes). Con ellas se predice la marea de cualquier hora con numpy, sin
 dependencias nuevas. Lo que no es marea (viento, temporales) no entra: eso lo pone la corriente global, como hasta ahora.
 
 Se usa con DIVY_MAREA_FUENTE=stofs (pipeline.py y marea.py): en los spots que tienen constantes, la corriente de marea
