@@ -455,7 +455,8 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
                 res[sid]['profiles'].append({'date': str(t)[:10], 'levels': levels})
 
     tem = dict(variables=['thetao'], start_datetime=t0, end_datetime=t1, minimum_depth=0, maximum_depth=60)
-    each_zone('temperatura med', 'cmems_mod_med_phy-tem_anfc_4.2km_P1D-m', {'med'}, profiles, **tem)
+    # T40: desde la release del 24 nov 2026 (NEMO 5) el dataset se llama «-temp_» (antes «-tem_», que se retira el 12 ene 2027).
+    each_zone('temperatura med', 'cmems_mod_med_phy-temp_anfc_4.2km_P1D-m', {'med'}, profiles, **tem)
     each_zone('temperatura ibi', 'cmems_mod_ibi_phy_anfc_0.027deg-3D_P1D-m', {'ibi'}, profiles, **tem)
     each_zone('temperatura noroeste', 'cmems_mod_nws_phy-tem_anfc_1.5km-3D_P1D-m', {'nws'}, profiles, **tem)
     each_zone('temperatura báltico', 'cmems_mod_bal_phy_anfc_P1D-m', {'bal'}, profiles, **tem)

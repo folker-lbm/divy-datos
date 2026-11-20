@@ -14,7 +14,8 @@ import copernicusmarine as cm
 
 AVISO_DIAS = 60
 HERE = Path(__file__).resolve().parent
-FUENTES = ('pipeline.py', 'pacioos.py', 'boyas.py')
+# T40 (20 nov): también la marea (marea.py), lo habitual (habitual.py) y lo habitual de Europa (t124_europa).
+FUENTES = ('pipeline.py', 'pacioos.py', 'boyas.py', 'marea.py', 'habitual.py', 't124_europa/habitual_europa.py')
 
 
 def used_ids():
