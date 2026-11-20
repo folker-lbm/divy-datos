@@ -396,7 +396,7 @@ def descargar(spots, t0, t1, warnings, opener=None):
     print(f'  · marea descargada: {len(out)} spots en {time.time() - t_ini:.0f} s', flush=True)
     if stofs is not None:  # T149: cuántos spots llevan la marea de STOFS; si son muchos menos, algo falla (tabla nodal, datos)
         n = sum(1 for o in out.values() if o['marea'].get('fuente') == 'stofs')
-        esperados = sum(1 for r in stofs['spots'].values() if marea_stofs.usable(r))
+        esperados = sum(1 for sid in spots if sid in stofs['spots'] and marea_stofs.usable(stofs['spots'][sid]))  # los de esta ejecución
         print(f'  · marea de STOFS en {n} spots (de {esperados} con constantes)', flush=True)
         if n < 0.8 * esperados:
             warnings.append(f'Marea: STOFS solo en {n} de {esperados} spots; el resto con Copernicus (¿tabla nodal fuera de fecha?)')
