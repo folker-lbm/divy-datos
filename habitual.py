@@ -17,6 +17,7 @@ otra descarga; con un año de la serie horaria sale lo mismo para este fin.
 Por spot, percentiles (50, 75, 90, 95 y 98) de `total` (general + marea), `marea` (sola) y `general` (sola), en km/h.
 Se calcula una vez por spot (y al añadir spots): datos/corriente-spots.json.
 """
+import os
 import numpy as np
 
 from marea import DS_UV, _abrir
@@ -78,6 +79,11 @@ def calcula(spots, celdas_marea, t0, t1, workers=16, stofs=None):
     pc = lambda x: {p: round(float(np.percentile(x, p)), 2) for p in PCTS}  # noqa: E731
     out = {}
     fuente = {}
+    if stofs is None and os.environ.get('DIVY_MAREA_FUENTE') == 'stofs':
+        # T149: con el interruptor encendido, lo habitual también sale de STOFS aunque no se le pasen las constantes
+        # (si no, el recálculo anual volvería a Copernicus sin avisar y no casaría con la previsión).
+        import marea_stofs
+        stofs = marea_stofs.cargar()
     if stofs is not None:
         from datetime import datetime, timezone
 
