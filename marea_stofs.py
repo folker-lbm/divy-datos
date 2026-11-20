@@ -26,6 +26,10 @@ RUTA = Path(__file__).resolve().parent / 'datos' / 'marea-stofs.json'
 # Solo se usan las constantes que predicen bien la serie que no entró en el ajuste (los últimos 14 días): correlación a lo
 # largo del eje de la marea de al menos CORR_MIN. Donde no, se queda la marea de Copernicus.
 CORR_MIN = 0.8
+# Tampoco se usan donde STOFS deja la marea en menos de la mitad que Copernicus, si Copernicus da 1 km/h o más (p90 de las
+# mismas tres semanas): bajar la corriente sin pruebas es el error peligroso, como en el ajuste por reportes (solo hacia
+# arriba). Lo marca s3c_excluir.py en «excluir»; en Alor, Nusa Penida o Raja Ampat, STOFS da 0,3 km/h donde se bucea con
+# corriente fuerte.
 
 _cache = {}
 
@@ -37,6 +41,8 @@ def cargar(ruta=RUTA):
 
 
 def usable(r):
+    if r.get('excluir'):  # p. ej. 'baja_sin_pruebas': STOFS baja mucho la marea de Copernicus y no hay con qué comprobarlo
+        return False
     res = r.get('reserva') or {}
     return res.get('corr_eje') is not None and res['corr_eje'] >= CORR_MIN
 
