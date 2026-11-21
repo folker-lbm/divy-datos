@@ -89,12 +89,13 @@ jobs:
           # «gh variable set DIVY_MAREA_FUENTE --body stofs -R folker-lbm/divy-datos» y una completa a mano; se apaga con
           # «gh variable delete DIVY_MAREA_FUENTE -R folker-lbm/divy-datos» y otra completa (ver INFORME de T149).
           DIVY_MAREA_FUENTE: ${{ vars.DIVY_MAREA_FUENTE }}
-          # T127 (21 nov): viento de todo el mundo con ECMWF Open Data a 0,1° y su oleaje en lugar del de Open-Meteo
-          # (ecmwf01.py; «todo», también antes del global de Copernicus: no se recomienda). Interruptor: la variable del
-          # repositorio DIVY_ECMWF01. Se enciende, con el OK de Luka, con
-          # «gh variable set DIVY_ECMWF01 --body 1 -R folker-lbm/divy-datos» y se apaga con «gh variable delete DIVY_ECMWF01
-          # -R folker-lbm/divy-datos»; vale desde la ejecución siguiente (las dos modalidades bajan el viento y el oleaje).
+          # T127 (21 nov): viento de todo el mundo con ECMWF Open Data a 0,1°, salvo los spots de costa abrigada de
+          # datos/ecmwf01-abrigados.json (ecmwf01.py). Interruptor: la variable del repositorio DIVY_ECMWF01. Se enciende, con
+          # el OK de Luka, con «gh variable set DIVY_ECMWF01 --body 1 -R folker-lbm/divy-datos» y se apaga con «gh variable
+          # delete DIVY_ECMWF01 -R folker-lbm/divy-datos»; vale desde la ejecución siguiente. El oleaje de ECMWF va aparte,
+          # con DIVY_ECMWF01_OLAS («respaldo» o «todo»), y no está aprobado (Luka, 21 nov).
           DIVY_ECMWF01: ${{ vars.DIVY_ECMWF01 }}
+          DIVY_ECMWF01_OLAS: ${{ vars.DIVY_ECMWF01_OLAS }}
         run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" --regiones ${{ matrix.grupo }} --cupo-om 200 ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
       - name: Avisos del proceso
         if: always()

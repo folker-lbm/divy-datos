@@ -618,17 +618,23 @@ SUMAR_MAREA = os.environ.get('DIVY_SUMAR_MAREA') == '1'
 AJUSTE_REPORTES = os.environ.get('DIVY_AJUSTE_REPORTES')
 AJUSTE_MODO = 'aplicar' if os.environ.get('DIVY_AJUSTE_MODO') == 'aplicar' else 'sombra'
 CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.json'
-# T127 (21 nov): viento y oleaje de ECMWF Open Data a 0,1° (ecmwf01.py). Con DIVY_ECMWF01=1, el viento de todo el mundo
-# sale de ECMWF 0,1° (ICON-EU, ICON global, Open-Meteo y ECMWF 0,25° quedan de respaldo; los modelos locales de
-# viento_local.py siguen por encima) y su oleaje sustituye a Open-Meteo Marine donde Copernicus no da oleaje (Open-Meteo
-# queda para la corriente, la temperatura y lo que falte). Con DIVY_ECMWF01=todo, además, el oleaje de ECMWF va antes del
-# global de Copernicus si su celda de mar está a WAVE_MAX_KM o menos (no se recomienda: frente a las boyas, ECMWF
-# sobreestima la altura más que el global, +0,15 m frente a +0,06 en Norteamérica). Sin la variable, como siempre.
-ECMWF01 = os.environ.get('DIVY_ECMWF01') in ('1', 'todo')
-ECMWF01_ANTES_DEL_GLOBAL = os.environ.get('DIVY_ECMWF01') == 'todo'
+# T127 (21 nov): viento y oleaje de ECMWF Open Data a 0,1° (ecmwf01.py), con dos interruptores separados (Luka, 21 nov).
+#   · DIVY_ECMWF01=1: el viento de todo el mundo sale de ECMWF 0,1° (ICON-EU, ICON global, Open-Meteo y ECMWF 0,25° quedan
+#     de respaldo; los modelos locales de viento_local.py siguen por encima), salvo los spots de costa abrigada de
+#     datos/ecmwf01-abrigados.json, que siguen con ICON (ahí ECMWF toma una celda de mar abierto y exagera el viento).
+#   · DIVY_ECMWF01_OLAS (solo con el anterior; no aprobado, Luka 21 nov: el oleaje de ECMWF no entra por ahora): «respaldo»,
+#     su oleaje sustituye a Open-Meteo Marine donde Copernicus no da oleaje; «todo», además va antes del global de
+#     Copernicus si su celda de mar está a WAVE_MAX_KM o menos (no se recomienda: frente a las boyas sobreestima la altura
+#     más que el global, +0,15 m frente a +0,06 en Norteamérica).
+# Sin las variables, como siempre.
+ECMWF01 = os.environ.get('DIVY_ECMWF01') == '1'
+ECMWF01_OLAS = ECMWF01 and os.environ.get('DIVY_ECMWF01_OLAS') in ('respaldo', 'todo')
+ECMWF01_ANTES_DEL_GLOBAL = ECMWF01_OLAS and os.environ.get('DIVY_ECMWF01_OLAS') == 'todo'
+ABRIGADOS = Path(__file__).resolve().parent / 'datos' / 'ecmwf01-abrigados.json'
 if ECMWF01:
     SOURCES['viento'] = ('ECMWF Open Data (IFS 0,1°, CC BY 4.0); Puerto Rico, Hawái, Guam y Samoa: CariCOOS y PacIOOS WRF; respaldo: DWD ICON-EU, '
                          'DWD ICON global, Open-Meteo Forecast y ECMWF Open Data (IFS 0,25°)')
+if ECMWF01_OLAS:
     SOURCES['oleaje'] = ('Copernicus Marine MEDSEA_ANALYSISFORECAST_WAV_006_017, IBI_ANALYSISFORECAST_WAV_005_005 y '
                          'GLOBAL_ANALYSISFORECAST_WAV_001_027; respaldo: ECMWF Open Data (WAM 0,1°, CC BY 4.0) y Open-Meteo Marine')
 
@@ -894,7 +900,7 @@ def main():
                         if v is not None and t < now:
                             rows[t.strftime('%Y-%m-%dT%H:00')] = {'wind': v, 'gust': s['gust'][i], 'wdir': s['wdir'][i]}
                     out[sid] = rows
-                    if ECMWF01:
+                    if ECMWF01_OLAS:
                         # T127: el oleaje de las horas pasadas que ya no da ningún modelo (los spots que dejan Open-Meteo
                         # Marine, que sí las daba). Aparte: si falla, el viento anterior sigue.
                         try:
@@ -962,10 +968,20 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent))  # con -I, la carpeta del script no está en el path
     ec_wind, ec_waves, ec_km = {}, None, None
     if ECMWF01:
+        from ecmwf01 import ecmwf01
+        try:
+            abrigados = set(json.loads(ABRIGADOS.read_text())['spots'])
+        except Exception as e:  # noqa: BLE001
+            # Sin la lista no se enciende a medias: todo el viento sigue con ICON.
+            abrigados = set(spots)
+            warnings.append(f'ECMWF 0,1°: sin la lista de spots abrigados ({str(e)[:60]}); el viento sigue con ICON')
+        pedir = spots if ECMWF01_OLAS else {sid: pos for sid, pos in spots.items() if sid not in abrigados}
+        ec_wind, ec_waves, ec_km = ecmwf01(pedir, now, end, warnings, olas=ECMWF01_OLAS)
+        ec_wind = {sid: v for sid, v in ec_wind.items() if sid not in abrigados}
+        print(f'  · viento de ECMWF 0,1° para {len(ec_wind)} spots; {len(abrigados & set(spots))} de costa abrigada siguen con ICON')
+    if ECMWF01_OLAS:
         # T127: con oleaje de ECMWF 0,1°, Open-Meteo Marine solo para los spots sin corriente o sin perfil de temperatura
         # de Copernicus (su corriente y su temperatura de superficie) y para los que se queden sin ningún oleaje.
-        from ecmwf01 import ecmwf01
-        ec_wind, ec_waves, ec_km = ecmwf01(spots, now, end, warnings)
         # Oleaje de ECMWF solo con su celda de mar a WAVE_MAX_KM o menos, como Copernicus (2.ª revisión: más lejos, en
         # canales y lagunas, tomaba el mar abierto; Gold Coast Seaway, 0,82 → 1,35 m). Los demás siguen con Open-Meteo.
         ec_waves = {sid: v for sid, v in ec_waves.items() if ec_km.get(sid, 99) <= WAVE_MAX_KM}
@@ -1023,7 +1039,8 @@ def main():
     snapshots = {}
     for r in regions:
         ids = [sid for sid in spots if region_of(sid) == r]
-        snapshots[r] = merge({sid: spots[sid] for sid in ids}, om, cop, now, start, end, alerts, buoy, wind, prev_wind, ec_waves, ec_km, prev_waves)
+        snapshots[r] = merge({sid: spots[sid] for sid in ids}, om, cop, now, start, end, alerts, buoy, wind, prev_wind,
+                             ec_waves if ECMWF01_OLAS else None, ec_km if ECMWF01_OLAS else None, prev_waves)
         snapshots[r]['region'] = r
         # Consumo de Open-Meteo de esta ejecución (T103/T66, 7 nov): el vigilante de la API suma el del día por grupo de
         # regiones y avisa al 80 % del plan gratuito. Cada spot pedido cuenta como una llamada (Marine y Forecast aparte).
