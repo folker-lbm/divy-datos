@@ -16,8 +16,8 @@ Se baja el campo del mundo entero, solo las variables que hacen falta, por rango
 (unos 17 MB por paso: 10u, 10v, 10fg, swh, mwd, pp1d), cada 3 h hasta cubrir el final de la ventana, de la copia de Google
 Cloud (la más rápida) y, si falla, de la de ECMWF y de la de AWS. Viento en el punto de rejilla más cercano (como en la
 validación); oleaje en la celda de mar más cercana al spot (con altura, dirección y periodo; si no, sin periodo), hasta 3
-celdas (~33 km). Interpolado a horas como ecmwf() de viento.py. La racha a 0,1° es la máxima de la hora anterior a cada
-paso y solo llega hasta +90 h. Un spot solo sale si sus pasos cubren toda la ventana sin huecos de más de HUECO_MAX h:
+celdas (~33 km; pipeline.py solo lo usa a WAVE_MAX_KM o menos). Interpolado a horas como ecmwf() de viento.py. La racha a
+0,1° es la máxima de la hora anterior a cada paso, vale 0 en el paso 0 y solo llega hasta +90 h. Un spot solo sale si sus pasos cubren toda la ventana sin huecos de más de HUECO_MAX h:
 si faltan pasos, va entero al respaldo (ICON, Open-Meteo).
 Salida: (viento {spot: {hora: {wind, gust, wdir}}}, oleaje {spot: {hora: [hs, dir, tp]}}, distancia {spot: km a la celda
 de mar}).
@@ -254,9 +254,12 @@ def ecmwf01(spots, now, end, warnings, olas=True):
                     w = (h - a) / (b - a)
                     u = lerp(at('10u', a, n), at('10u', b, n), w)
                     v = lerp(at('10v', a, n), at('10v', b, n), w)
-                    # Racha: la del paso en las horas de paso; entre pasos, la mayor de las dos (ninguna, más allá de +90 h).
-                    ga, gb = at('10fg', a, n), at('10fg', b, n)
-                    g = ga if h == a else gb if h == b else (max(ga, gb) if ga is not None and gb is not None else None)
+                    # Racha: la del paso en las horas de paso y, entre pasos, interpolada (con el máximo de las dos, la de las
+                    # horas intermedias salía 2,5 km/h más alta y el color oscilaba cada 3 h; 2.ª revisión, 21 nov). En el
+                    # paso 0 vale 0 (no hay hora anterior): se toma la del paso siguiente. Más allá de +90 h no hay.
+                    ga, gb = at('10fg', a, n) if a else None, at('10fg', b, n)
+                    ga = gb if ga is None else ga
+                    g = ga if h == a else gb if h == b else (lerp(ga, gb, w) if ga is not None and gb is not None else None)
                     w_rows[t.strftime('%Y-%m-%dT%H:00')] = {'wind': round(math.hypot(u, v) * 3.6), 'wdir': round((math.degrees(math.atan2(-u, -v)) + 360) % 360),
                                                            'gust': round(g * 3.6) if g is not None else None}
         elif ks:

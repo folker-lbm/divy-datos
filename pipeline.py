@@ -966,6 +966,9 @@ def main():
         # de Copernicus (su corriente y su temperatura de superficie) y para los que se queden sin ningún oleaje.
         from ecmwf01 import ecmwf01
         ec_wind, ec_waves, ec_km = ecmwf01(spots, now, end, warnings)
+        # Oleaje de ECMWF solo con su celda de mar a WAVE_MAX_KM o menos, como Copernicus (2.ª revisión: más lejos, en
+        # canales y lagunas, tomaba el mar abierto; Gold Coast Seaway, 0,82 → 1,35 m). Los demás siguen con Open-Meteo.
+        ec_waves = {sid: v for sid, v in ec_waves.items() if ec_km.get(sid, 99) <= WAVE_MAX_KM}
         if ec_waves:  # si ECMWF falla del todo, el criterio de siempre (sin gastar más cupo de Open-Meteo que antes)
             marine_for = {sid for sid in spots if not cs.get(sid, {}).get('currents') or not cs.get(sid, {}).get('profiles')
                           or not (cs.get(sid, {}).get('waves') or ec_waves.get(sid))}
