@@ -618,6 +618,19 @@ SUMAR_MAREA = os.environ.get('DIVY_SUMAR_MAREA') == '1'
 AJUSTE_REPORTES = os.environ.get('DIVY_AJUSTE_REPORTES')
 AJUSTE_MODO = 'aplicar' if os.environ.get('DIVY_AJUSTE_MODO') == 'aplicar' else 'sombra'
 CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.json'
+# T127 (21 nov): viento y oleaje de ECMWF Open Data a 0,1° (ecmwf01.py). Con DIVY_ECMWF01=1, el viento de todo el mundo
+# sale de ECMWF 0,1° (ICON-EU, ICON global, Open-Meteo y ECMWF 0,25° quedan de respaldo; los modelos locales de
+# viento_local.py siguen por encima) y su oleaje sustituye a Open-Meteo Marine donde Copernicus no da oleaje (Open-Meteo
+# queda para la corriente, la temperatura y lo que falte). Con DIVY_ECMWF01=todo, además, el oleaje de ECMWF va antes del
+# global de Copernicus si su celda de mar está a WAVE_MAX_KM o menos (no se recomienda: frente a las boyas, ECMWF
+# sobreestima la altura más que el global, +0,15 m frente a +0,06 en Norteamérica). Sin la variable, como siempre.
+ECMWF01 = os.environ.get('DIVY_ECMWF01') in ('1', 'todo')
+ECMWF01_ANTES_DEL_GLOBAL = os.environ.get('DIVY_ECMWF01') == 'todo'
+if ECMWF01:
+    SOURCES['viento'] = ('ECMWF Open Data (IFS 0,1°, CC BY 4.0); Puerto Rico, Hawái, Guam y Samoa: CariCOOS y PacIOOS WRF; respaldo: DWD ICON-EU, '
+                         'DWD ICON global, Open-Meteo Forecast y ECMWF Open Data (IFS 0,25°)')
+    SOURCES['oleaje'] = ('Copernicus Marine MEDSEA_ANALYSISFORECAST_WAV_006_017, IBI_ANALYSISFORECAST_WAV_005_005 y '
+                         'GLOBAL_ANALYSISFORECAST_WAV_001_027; respaldo: ECMWF Open Data (WAM 0,1°, CC BY 4.0) y Open-Meteo Marine')
 
 
 # Visibilidad estimada (m) a partir de cada medida. Provisional: se calibra con los reportes (backtest, REGLAS v0.5).
@@ -667,7 +680,7 @@ def suma_corrientes(a, a_dir, b, b_dir):
     return clean(math.hypot(u, v)), clean((math.degrees(math.atan2(u, v)) + 360) % 360, 0)
 
 
-def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, prev_wind=None):
+def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, prev_wind=None, ec_waves=None, ec_km=None, prev_waves=None):
     """Previsión que usa la app: columnas horarias (Open-Meteo + corriente de Copernicus), perfiles y satélite."""
     n = int((end - start).total_seconds() // 3600) + 1
     keys = [(start + timedelta(hours=i)).strftime('%Y-%m-%dT%H:00') for i in range(n)]
@@ -687,8 +700,18 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
             # Oleaje: Copernicus (MEDSEA > IBI > global) si llega al spot; si no, Open-Meteo.
             wv = c.get('waves', {}).get(t, {})
             best = next((wv[k] for k in ('med', 'ibi', 'reg', 'glo') if k in wv and wv[k][0] is not None), None)
+            if ec_waves is not None:
+                # T127: Copernicus (MEDSEA > IBI > regional > global) > ECMWF 0,1° > Open-Meteo > la previsión anterior. Con
+                # DIVY_ECMWF01=todo, ECMWF va antes del global si su celda de mar está a WAVE_MAX_KM o menos.
+                ec = ec_waves.get(sid, {}).get(t)
+                reg = next((wv[k] for k in ('med', 'ibi', 'reg') if k in wv and wv[k][0] is not None), None)
+                glo = wv['glo'] if 'glo' in wv and wv['glo'][0] is not None else None
+                cerca = ECMWF01_ANTES_DEL_GLOBAL and (ec_km or {}).get(sid, 99) <= WAVE_MAX_KM
+                best = reg or (ec if ec and (cerca or not glo) else None) or glo or ec
             if best:
                 row.update(hs=best[0], dir=best[1], tp=best[2])
+            elif row.get('hs') is None and (prev_waves or {}).get(sid, {}).get(t):
+                row.update(prev_waves[sid][t])
             cur = c.get('currents', {}).get(t, {})
             # Dirección: la del modelo más fino disponible (MEDSEA en el Mediterráneo, si no IBI, si no el global).
             # Con DIVY_SUMAR_MAREA, «mar» trae la global con la marea sumada (copernicus()); «glo» y su rumbo, como siempre.
@@ -697,7 +720,10 @@ def merge(spots, om, cop, now, start, end, alerts=None, buoy=None, wind=None, pr
                     'cMar': cur.get('mar'), 'cMarDir': cur.get('marDir')}
             for k in COLUMNS:
                 cols[k].append(vals.get(k))
-        out_spots[sid] = {'seaCellKm': c.get('seaCell', {}), **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
+        sea_km = dict(c.get('seaCell', {}))
+        if ec_km and sid in ec_km:
+            sea_km['wavEc'] = ec_km[sid]
+        out_spots[sid] = {'seaCellKm': sea_km, **cols, 'profiles': c.get('profiles', []), 'satellite': c.get('satellite', []), 'clarity': clarity(c)}
         if alerts and alerts.get(sid):
             out_spots[sid]['alerts'] = alerts[sid]
         if buoy and buoy.get(sid):
@@ -868,10 +894,24 @@ def main():
                         if v is not None and t < now:
                             rows[t.strftime('%Y-%m-%dT%H:00')] = {'wind': v, 'gust': s['gust'][i], 'wdir': s['wdir'][i]}
                     out[sid] = rows
+                    if ECMWF01:
+                        # T127: el oleaje de las horas pasadas que ya no da ningún modelo (los spots que dejan Open-Meteo
+                        # Marine, que sí las daba). Aparte: si falla, el viento anterior sigue.
+                        try:
+                            olas = {}
+                            for i, v in enumerate(s.get('hs', [])):
+                                t = t0 + timedelta(hours=i)
+                                if v is not None and t < now:
+                                    olas[t.strftime('%Y-%m-%dT%H:00')] = {'hs': v, 'dir': s['dir'][i], 'tp': s['tp'][i]}
+                            prev_waves[sid] = olas
+                        except Exception:  # noqa: BLE001
+                            pass
             return out
         except Exception as e:  # noqa: BLE001
             warnings.append(f'Sin viento anterior para las horas pasadas ({str(e)[:80]})')
             return {}
+
+    prev_waves = {}
 
     fresh_cop = False
     if args.modo == 'completo':
@@ -920,12 +960,30 @@ def main():
     cs = cop.get('spots', {})
     marine_for = {sid for sid in spots if not cs.get(sid, {}).get('waves') or not cs.get(sid, {}).get('currents')}
     sys.path.insert(0, str(Path(__file__).resolve().parent))  # con -I, la carpeta del script no está en el path
+    ec_wind, ec_waves, ec_km = {}, None, None
+    if ECMWF01:
+        # T127: con oleaje de ECMWF 0,1°, Open-Meteo Marine solo para los spots sin corriente o sin perfil de temperatura
+        # de Copernicus (su corriente y su temperatura de superficie) y para los que se queden sin ningún oleaje.
+        from ecmwf01 import ecmwf01
+        ec_wind, ec_waves, ec_km = ecmwf01(spots, now, end, warnings)
+        if ec_waves:  # si ECMWF falla del todo, el criterio de siempre (sin gastar más cupo de Open-Meteo que antes)
+            marine_for = {sid for sid in spots if not cs.get(sid, {}).get('currents') or not cs.get(sid, {}).get('profiles')
+                          or not (cs.get(sid, {}).get('waves') or ec_waves.get(sid))}
     # Viento por modelos descargados enteros (viento.py): ICON-EU en Europa y, fuera, ECMWF (global, sin límite de
     # llamadas; catálogo mundial, 14 oct). Open-Meteo, más fino que ECMWF, solo para España fuera de ICON-EU (Canarias)
     # y los huecos.
-    from viento import ecmwf, icon_eu, icon_global
-    wind = icon_eu(spots, now, end, warnings)
-    world = {sid: spots[sid] for sid in spots if not wind.get(sid) and region_of(sid) != 'es'}
+    from viento import ecmwf, icon_eu, icon_global, in_icon_eu
+    # T127: con ECMWF 0,1°, el resto de la cadena solo para los spots que se queden sin él.
+    wind = dict(ec_wind)
+    falta = {sid: pos for sid, pos in spots.items() if not wind.get(sid)}
+    wind.update(icon_eu(falta, now, end, warnings))
+    world = {sid: spots[sid] for sid in falta if not wind.get(sid) and region_of(sid) != 'es'}
+    if ECMWF01:
+        # Los modelos locales mejoran también el viento de ECMWF 0,1° (los mismos spots que sin el interruptor).
+        local = {sid: pos for sid, pos in spots.items() if region_of(sid) != 'es' and not in_icon_eu(pos) and wind.get(sid)}
+        if local:
+            from viento_local import local_wind
+            local_wind(local, wind, now, end, warnings)
     if world:
         # ICON global (~13 km; 15 oct) y, para lo que falte, ECMWF (~25 km).
         wind.update({k: v for k, v in icon_global(world, now, end, warnings).items() if v})
@@ -962,7 +1020,7 @@ def main():
     snapshots = {}
     for r in regions:
         ids = [sid for sid in spots if region_of(sid) == r]
-        snapshots[r] = merge({sid: spots[sid] for sid in ids}, om, cop, now, start, end, alerts, buoy, wind, prev_wind)
+        snapshots[r] = merge({sid: spots[sid] for sid in ids}, om, cop, now, start, end, alerts, buoy, wind, prev_wind, ec_waves, ec_km, prev_waves)
         snapshots[r]['region'] = r
         # Consumo de Open-Meteo de esta ejecución (T103/T66, 7 nov): el vigilante de la API suma el del día por grupo de
         # regiones y avisa al 80 % del plan gratuito. Cada spot pedido cuenta como una llamada (Marine y Forecast aparte).
