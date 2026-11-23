@@ -8,7 +8,7 @@ Uso:    python -I publicar_corriente.py                 (pruebas, divy-staging; 
 
 Respaldo (arreglo 1 de T144, 12 nov): si la marea fuera de Europa no se puede encender (o hay que apagarla), lo habitual
 de esos spots no vale, porque se calculó con la marea. Con --respaldo se publica sin «hab» (ni «rojo») en todos los
-spots cuya corriente habitual no sale de un modelo regional europeo (los que no llevan «rojo»), y el motor de la 1.2
+spots cuya corriente habitual no sale de un modelo regional europeo (los que llevan «marea»), y el motor de la 1.2
 vuelve solo a la regla fija de siempre en ellos. Los europeos con modelo regional se quedan como están. Para deshacerlo,
 se vuelve a publicar sin --respaldo. El respaldo es para la marea apagada: con ella encendida, la regla fija leería la
 corriente con la marea y saldría más roja que hoy. Con --sin-habitual se quita lo habitual en todos los spots, también
@@ -33,8 +33,9 @@ DATOS = Path(__file__).parent / 'datos/corriente-spots.json'
 
 
 def respaldo(c):
-    """Corriente de un spot para la regla de respaldo: sin lo habitual si no sale de un modelo regional europeo."""
-    if 'rojo' in c:
+    """Corriente de un spot para la regla de respaldo: sin lo habitual si no sale de un modelo regional europeo. Las de la
+    cadena global llevan «marea» (también las de Europa del puente de la corriente, que llevan además «rojo», 23 nov)."""
+    if 'marea' not in c:
         return c
     return {k: v for k, v in c.items() if k not in ('hab', 'rojo')}
 
