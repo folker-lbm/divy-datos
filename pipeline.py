@@ -370,14 +370,14 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     # ellos en Canarias). Con DIVY_CORRIENTE_LEJOS=1 reciben la corriente global con la marea sumada (cMar), como el resto
     # del mundo; la 1.2 la acepta con la celda global a 10 km o menos. Solo «mar»: «glo» se quita después de sumar la
     # marea, para que la 1.1, el resumen y las páginas web (que leen cGlo) no cambien (arreglo 9 de T144). Quedan fuera
-    # los spots con lo habitual de un modelo regional en corriente-spots.json (los que llevan «rojo»): si su descarga
+    # los spots con lo habitual de un modelo regional en corriente-spots.json (los que no llevan «marea»): si su descarga
     # regional falla en una ejecución, no deben compararse con la global. Los que tienen lo habitual de la cadena global
-    # (con «marea», sin «rojo»; p. ej., los de mar abierto del puente) sí entran. La corriente regional sigue en su
-    # columna. Sin la variable, nada cambia.
+    # (con «marea»; p. ej., los de mar abierto del puente, que en Europa también llevan «rojo») sí entran. La corriente
+    # regional sigue en su columna. Sin la variable, nada cambia.
     puente = set()
     if CORRIENTE_LEJOS:
         try:
-            con_hab = {sid for sid, c in json.loads(CORRIENTE_SPOTS.read_text()).items() if c.get('hab') and 'rojo' in c}
+            con_hab = {sid for sid, c in json.loads(CORRIENTE_SPOTS.read_text()).items() if c.get('hab') and 'marea' not in c}
         except Exception as e:  # noqa: BLE001 — sin el fichero no se sabe quién tiene lo habitual: no se aplica
             warnings.append(f'Puente de la corriente: sin {CORRIENTE_SPOTS.name} ({type(e).__name__}); no se aplica')
             con_hab = None
