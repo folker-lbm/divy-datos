@@ -299,9 +299,9 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     zs = zones(spots)
     print(f'{len(spots)} spots en {len(zs)} zonas')
 
-    def each_zone(label, ds_id, kinds, fn, **kw):
+    def each_zone(label, ds_id, kinds, fn, zonas=None, **kw):
         """Descarga `ds_id` en las zonas cuyo modelo está en `kinds` ({'med', 'ibi', 'glo'}; None = todas; o una
-        función que recibe la zona)."""
+        función que recibe la zona). `zonas`: otras zonas en lugar de las de todos los spots (el puente de la corriente)."""
         # Las zonas se leen en paralelo (son descargas): la lectura directa tardaba 75 min de una en una (14 oct).
         from concurrent.futures import ThreadPoolExecutor
 
@@ -322,7 +322,7 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
                 warnings.append(f'Copernicus {label} (zona {n + 1}: {", ".join(z["ids"][:2])}…): {type(e).__name__} {str(e)[:160]}')
 
         ok = kinds if callable(kinds) else (lambda z: kinds is None or z['kind'] in kinds)
-        todo = [(n, z) for n, z in enumerate(zs) if ok(z)]
+        todo = [(n, z) for n, z in enumerate(zs if zonas is None else zonas) if ok(z)]
         if not todo:
             return
         with ThreadPoolExecutor(max_workers=6) as pool:
@@ -364,6 +364,32 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
     each_zone('corrientes báltico', 'cmems_mod_bal_phy_anfc_PT1H-i', {'bal'}, currents('reg'), **cur)
     each_zone('corrientes mar Negro', 'cmems_mod_blk_phy-cur_anfc_2.5km_PT1H-m', {'blk'}, currents('reg'), **cur)
     each_zone('corrientes global', 'cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i', {'glo'}, currents('glo'), **cur)
+    # Puente de la corriente (23 nov, sin aprobar): en Europa, los spots cuya celda de mar regional (MEDSEA, IBI o los del
+    # norte) queda a más de 3 km se quedaban sin corriente: la app la descarta (MAX_CELL_KM de forecast-data.ts) y, como
+    # el proceso sí la tiene, tampoco piden el respaldo de Open-Meteo. Eran unos 350 spots el 23 nov (80 en España, 53 de
+    # ellos en Canarias). Con DIVY_CORRIENTE_LEJOS=1 reciben la corriente global con la marea sumada (cMar), como el resto
+    # del mundo; la 1.2 la acepta con la celda global a 10 km o menos. Solo «mar»: «glo» se quita después de sumar la
+    # marea, para que la 1.1, el resumen y las páginas web (que leen cGlo) no cambien (arreglo 9 de T144). Quedan fuera
+    # los spots con lo habitual de un modelo regional en corriente-spots.json (los que llevan «rojo»): si su descarga
+    # regional falla en una ejecución, no deben compararse con la global. Los que tienen lo habitual de la cadena global
+    # (con «marea», sin «rojo»; p. ej., los de mar abierto del puente) sí entran. La corriente regional sigue en su
+    # columna. Sin la variable, nada cambia.
+    puente = set()
+    if CORRIENTE_LEJOS:
+        try:
+            con_hab = {sid for sid, c in json.loads(CORRIENTE_SPOTS.read_text()).items() if c.get('hab') and 'rojo' in c}
+        except Exception as e:  # noqa: BLE001 — sin el fichero no se sabe quién tiene lo habitual: no se aplica
+            warnings.append(f'Puente de la corriente: sin {CORRIENTE_SPOTS.name} ({type(e).__name__}); no se aplica')
+            con_hab = None
+        if con_hab is not None:
+            lejos = {sid: spots[sid] for sid in spots if kind(spots[sid]) != 'glo' and sid not in con_hab and not any(
+                res[sid]['seaCell'].get(k) is not None and res[sid]['seaCell'][k] <= LEJOS_KM for k in ('med', 'ibi', 'reg'))}
+            if lejos:
+                each_zone('corrientes global (puente)', 'cmems_mod_glo_phy-cur_anfc_0.083deg_PT6H-i', None, currents('glo'),
+                          zonas=zones(lejos, size=GLOBAL_ZONE), **cur)
+                puente = set(lejos)
+                con = sum(1 for sid in lejos if res[sid]['seaCell'].get('glo') is not None and res[sid]['seaCell']['glo'] <= 10)
+                print(f'  · puente de la corriente: {len(lejos)} spots de Europa sin celda regional a 3 km; {con} con la global a 10 km o menos')
 
     # Marea de Copernicus (T124, fase 2): corriente de marea hora a hora y su ritmo (pleamar, bajamar, repuntes, vivas o
     # muertas) en todos los spots. El global de arriba no la lleva; los regionales europeos, sí.
@@ -524,6 +550,11 @@ def copernicus(spots, start, end, direct=False, sat_start=None):
                         h['mar'] = None if v is None else round(v, 1)
                         h['marDir'] = None if r is None else (round(r / 5) * 5) % 360
         print(f'  · marea ({len(mareas)} spots)')
+    # Puente de la corriente: en sus spots solo queda la global con la marea («mar»); sin marea, nada (como hasta ahora).
+    for sid in puente:
+        for h in res[sid]['currents'].values():
+            h.pop('glo', None)
+            h.pop('gloDir', None)
     return res
 
 
@@ -627,6 +658,13 @@ CORRIENTE_SPOTS = Path(__file__).resolve().parent / 'datos' / 'corriente-spots.j
 #     Copernicus si su celda de mar está a WAVE_MAX_KM o menos (no se recomienda: frente a las boyas sobreestima la altura
 #     más que el global, +0,15 m frente a +0,06 en Norteamérica).
 # Sin las variables, como siempre.
+# Puente de la corriente (23 nov, sin aprobar): la corriente global para los spots de Europa sin celda regional a 3 km o
+# menos (copernicus()). LEJOS_KM es el MAX_CELL_KM de la app (app/src/data/forecast-data.ts, repositorio de la app): si
+# cambia allí, cambia aquí y en t124_europa/habitual_europa.py.
+CORRIENTE_LEJOS = os.environ.get('DIVY_CORRIENTE_LEJOS') == '1'
+# Respaldo de la corriente (23 nov, sin aprobar): Open-Meteo para los spots sin corriente usable por la app (main()).
+RESPALDO_LEJOS = os.environ.get('DIVY_RESPALDO_LEJOS') == '1'
+LEJOS_KM = 3.0
 ECMWF01 = os.environ.get('DIVY_ECMWF01') == '1'
 ECMWF01_OLAS = ECMWF01 and os.environ.get('DIVY_ECMWF01_OLAS') in ('respaldo', 'todo')
 ECMWF01_ANTES_DEL_GLOBAL = ECMWF01_OLAS and os.environ.get('DIVY_ECMWF01_OLAS') == 'todo'
@@ -988,6 +1026,18 @@ def main():
         if ec_waves:  # si ECMWF falla del todo, el criterio de siempre (sin gastar más cupo de Open-Meteo que antes)
             marine_for = {sid for sid in spots if not cs.get(sid, {}).get('currents') or not cs.get(sid, {}).get('profiles')
                           or not (cs.get(sid, {}).get('waves') or ec_waves.get(sid))}
+    # Respaldo de la corriente (23 nov, sin aprobar): con DIVY_RESPALDO_LEJOS=1, Open-Meteo Marine también para los spots
+    # que tienen corriente de Copernicus pero ninguna que la app use: regional a más de 3 km (LEJOS_KM) y global a más de
+    # 10 km o sin ella. Hasta ahora no la pedían (el proceso creía que tenían corriente) y salían sin corriente. Fuera de
+    # España cuentan en el cupo de siempre. Sin la variable, nada cambia.
+    if RESPALDO_LEJOS:
+        def sin_usable(sid):
+            sc = cs.get(sid, {}).get('seaCell', {})
+            regional = any(sc.get(k) is not None and sc[k] <= LEJOS_KM for k in ('med', 'ibi', 'reg'))
+            return not regional and not (sc.get('glo') is not None and sc['glo'] <= 10)
+        extra = {sid for sid in spots if cs.get(sid, {}).get('currents') and sin_usable(sid)} - marine_for
+        marine_for |= extra
+        print(f'  · respaldo de la corriente: Open-Meteo Marine también para {len(extra)} spots sin corriente usable')
     # Viento por modelos descargados enteros (viento.py): ICON-EU en Europa y, fuera, ECMWF (global, sin límite de
     # llamadas; catálogo mundial, 14 oct). Open-Meteo, más fino que ECMWF, solo para España fuera de ICON-EU (Canarias)
     # y los huecos.

@@ -32,6 +32,10 @@ on:
         description: 'T124: marea de Copernicus sumada a la corriente global (solo con «pruebas»; en producción la enciende la variable DIVY_MAREA)'
         type: boolean
         default: false
+      puente:
+        description: 'Puente de la corriente: la global con la marea en los spots de Europa sin regional a 3 km (solo con «pruebas» y «marea»; en producción, la variable DIVY_CORRIENTE_LEJOS)'
+        type: boolean
+        default: false
 
 # Nunca dos ejecuciones a la vez: la de Open-Meteo depende de la parte de Copernicus de la última completa. Las de
 # pruebas van en su propia cola (3 nov): en la común, una pendiente de pruebas podía cancelar la pendiente de producción.
@@ -96,6 +100,16 @@ jobs:
           # con DIVY_ECMWF01_OLAS («respaldo» o «todo»), y no está aprobado (Luka, 21 nov).
           DIVY_ECMWF01: ${{ vars.DIVY_ECMWF01 }}
           DIVY_ECMWF01_OLAS: ${{ vars.DIVY_ECMWF01_OLAS }}
+          # Puente de la corriente (23 nov, sin aprobar): la corriente global para los spots de Europa cuya celda regional queda
+          # a más de 3 km (pipeline.py, CORRIENTE_LEJOS); solo hace algo con la marea encendida. En pruebas, la casilla «puente». Interruptor: la variable del repositorio DIVY_CORRIENTE_LEJOS. Se
+          # enciende, con el OK de Luka, con «gh variable set DIVY_CORRIENTE_LEJOS --body 1 -R folker-lbm/divy-datos» y una
+          # completa; se apaga con «gh variable delete DIVY_CORRIENTE_LEJOS -R folker-lbm/divy-datos» y otra completa.
+          DIVY_CORRIENTE_LEJOS: ${{ ((inputs.pruebas && inputs.puente) || vars.DIVY_CORRIENTE_LEJOS == '1') && '1' || '' }}
+          # Respaldo de la corriente (23 nov, sin aprobar): Open-Meteo para los spots sin corriente usable por la app
+          # (pipeline.py, RESPALDO_LEJOS). Variable del repositorio DIVY_RESPALDO_LEJOS; en pruebas, con la casilla «puente».
+          # Se enciende con «gh variable set DIVY_RESPALDO_LEJOS --body 1 -R folker-lbm/divy-datos» y se apaga con «gh
+          # variable delete DIVY_RESPALDO_LEJOS -R folker-lbm/divy-datos»; vale desde la ejecución siguiente.
+          DIVY_RESPALDO_LEJOS: ${{ ((inputs.pruebas && inputs.puente) || vars.DIVY_RESPALDO_LEJOS == '1') && '1' || '' }}
         run: python -I pipeline.py --modo "${{ steps.modo.outputs.modo }}" --regiones ${{ matrix.grupo }} --cupo-om 200 ${{ inputs.forzar && '--forzar' || '' }} --publicar ${{ inputs.pruebas && 'https://divy-staging.divy-api.workers.dev' || 'https://joindivy.com https://divy-staging.divy-api.workers.dev' }}
       - name: Avisos del proceso
         if: always()
