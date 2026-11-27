@@ -212,7 +212,7 @@ def main():
                     for k in ('hsE', 'tm', 'k', 'tot', 'ww', 'sw1', 'sw2'):
                         col[k].append(None)
                     continue
-                h, tm, _ = T.entrada(ray, {k: fila.get(k) for k in ('ww', 'sw1', 'sw2')}, (wind, wdir))
+                h, tm, _ = T.entrada(ray, {k: fila.get(k) for k in ('ww', 'sw1', 'sw2')}, (wind, wdir), fila['tot'][0])
                 col['hsE'].append(round(h, 2))
                 col['tm'].append(tm)
                 col['k'].append(round(T.factor_periodo(tm, barco.get(sid, False)), 3))

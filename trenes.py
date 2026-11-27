@@ -12,7 +12,8 @@ un lado y mar de fondo de otro, la dirección media no es la de ninguno de los d
    Fresnel 8; `f`, km de agua; docs/T126-METODO.md). Un tren llega al spot con la fracción de su energía que viene por
    rayos con camino abierto, repartida con la dispersión direccional del tipo de mar (el abanico de dirección):
    D(θ) ∝ cos^(2s)((θ − θ0)/2) (Mitsuyasu et al. 1975; Goda 2000, s_max: 10 para el mar de viento, 25 para el mar de
-   fondo de periodo corto y 75 para el mar de fondo largo y lejano). Altura en el spot = altura del tren × √(fracción).
+   fondo de periodo corto y 75 para el mar de fondo largo y lejano). Altura en el spot = altura del tren × √(fracción),
+   nunca menos de SUELO (el «abrigado» de hoy, por la refracción que el rayo recto no ve).
 3. El mar de viento es el mayor de dos: el del modelo que entra por los rayos abiertos y el que el viento de la
    previsión forma sobre el agua que hay delante (fetch de la dirección del viento, media de ±15°; SPM 1984, como T126).
 4. El mar en la entrada es la suma de energías de los tres: √(Hw² + H1² + H2²).
@@ -25,6 +26,7 @@ un lado y mar de fondo de otro, la dirección media no es la de ninguno de los d
 import gzip
 import json
 import math
+import os
 from pathlib import Path
 
 G = 9.81
@@ -35,7 +37,13 @@ T_FONDO_LARGO = 10.0  # s (periodo medio): desde aquí, mar de fondo largo y lej
 T_REF = 8.0  # s (periodo medio): referencia del umbral de mar de la entrada desde costa
 K_MAX = 1.5  # tope del factor del periodo (el umbral de 0,5 m nunca baja de 0,33 m)
 VIENTO_REF, MAR_REF = 40.0, 0.25  # km/h y m: criterio de T126 para que el viento cuente
+# Suelo de la altura de cada tren en la entrada: el «abrigado» del motor de hoy (0,25). El rayo recto no ve la
+# refracción ni las reflexiones, que meten mar de fondo detrás de las puntas (Honolua Bay con el mar del norte, prueba del
+# 27 nov); con el suelo, ningún tren llega más flojo de lo que hoy llega el oleaje a un spot abrigado.
+SUELO = float(os.environ.get('T139_SUELO', 0.25))
 RAYOS = Path(__file__).resolve().parent / 'datos' / 't139-rayos.json.gz'
+# Spots que no usan los trenes (siguen con el sector): en tierra de OSM o con la coordenada redondeada (prueba del 27 nov).
+EXCLUIDOS = Path(__file__).resolve().parent / 'datos' / 't139-excluidos.json'
 
 
 def ua(u):
@@ -51,10 +59,12 @@ def hm0_viento(u_kmh, f_km):
     return min(1.6e-3 * u * math.sqrt(f_km * 1000 / G), 0.2433 * u * u / G)
 
 
-def cargar_rayos(path=RAYOS):
-    """{id: {"f": [72 km], "s": "0/1 x 72"}} de T126 (mundo, 19 nov) y de España (mismo método, 27 nov)."""
+def cargar_rayos(path=RAYOS, excluidos=EXCLUIDOS):
+    """{id: {"f": [72 km], "s": "0/1 x 72"}} de T126 (mundo, 19 nov) y de España (mismo método, 27 nov), sin los excluidos."""
     with gzip.open(path, 'rt') as fh:
-        return json.load(fh)
+        rayos = json.load(fh)
+    fuera = json.loads(Path(excluidos).read_text())['spots'] if excluidos and Path(excluidos).exists() else {}
+    return {k: v for k, v in rayos.items() if k not in fuera}
 
 
 def _idx(deg):
@@ -97,19 +107,27 @@ def viento_cuenta(rayo, wdir):
     return hm0_viento(VIENTO_REF, fetch_dir(rayo, wdir)) >= MAR_REF
 
 
-def entrada(rayo, trenes, viento=None):
+def entrada(rayo, trenes, viento=None, total=None):
     """Mar en la entrada. `trenes`: {'ww': (hs, dir, tm), 'sw1': ..., 'sw2': ...} (cualquiera puede faltar o ser None).
-    `viento`: (km/h, dirección) de la previsión. Devuelve (altura en m, periodo medio del tren dominante o None,
-    detalle {tren: [altura en la entrada, periodo]}; el mar de viento formado delante sale como 'local')."""
+    `viento`: (km/h, dirección) de la previsión. `total`: altura del oleaje total (VHM0) en la celda.
+    Devuelve (altura en m, periodo medio del tren dominante o None, detalle {tren: [altura en la entrada, periodo]}; el
+    mar de viento formado delante sale como 'local').
+
+    Dos correcciones de la prueba del 27 nov:
+    - Las particiones no siempre suman toda la energía del total (en el global, la mediana es el 96 % de la altura y el
+      10 % peor, el 86 %). La que falta se reparte entre los trenes en proporción a la suya, para que un spot abierto a
+      todo reciba el total, como hoy, y no salga más verde solo por eso.
+    - El mar de viento que se forma delante no puede ser mayor que el del modelo en la celda de mar abierto (el SPM no
+      limita por duración; con fetch de 30 km daba más que el modelo)."""
+    crudos = {k: t for k in ('ww', 'sw1', 'sw2') if (t := trenes.get(k)) and t[0] is not None and t[1] is not None and t[0] > 0}
+    suma = math.sqrt(sum(t[0] ** 2 for t in crudos.values()))
+    escala = total / suma if total and suma > 0 else 1.0
     det = {}
-    for k in ('ww', 'sw1', 'sw2'):
-        t = trenes.get(k)
-        if not t or t[0] is None or t[1] is None or t[0] <= 0:
-            continue
-        hs, d, tm = t
-        det[k] = [hs * math.sqrt(fraccion(rayo, d, s_de(k, tm))), tm]
+    for k, (hs, d, tm) in crudos.items():
+        det[k] = [hs * escala * max(SUELO, math.sqrt(fraccion(rayo, d, s_de(k, tm)))), tm]
     if viento and viento[0] is not None and viento[1] is not None:
-        local = hm0_viento(viento[0], fetch_dir(rayo, viento[1]))
+        tope = crudos['ww'][0] * escala if 'ww' in crudos else 0.0
+        local = min(hm0_viento(viento[0], fetch_dir(rayo, viento[1])), tope)
         if local > det.get('ww', [0])[0]:
             det.pop('ww', None)
             det['local'] = [local, None]  # sin periodo: el mar corto que se forma delante no baja el umbral
