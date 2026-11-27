@@ -12,7 +12,8 @@ Para cada spot con rayos de T126 (datos/t139-rayos.json.gz):
 Escribe en salida/ (artefacto del flujo «Experimento», nunca en KV):
 - `sombra-<región>.json`: por spot y hora (las horas de la previsión publicada): `hsE` (mar en la entrada), `tm`
   (periodo medio del tren dominante), `k` (factor del periodo en la entrada desde costa), `wexp` (1 si cuenta el viento),
-  `hsTot` (oleaje total de la misma descarga, para comprobar que es la misma pasada del modelo) y los trenes en la celda.
+  `tot` (oleaje total de la misma descarga: altura, dirección y periodo de pico, para comprobar que es la misma pasada
+  del modelo y comparar con el motor de hoy sobre los mismos datos) y los trenes en la celda.
 - `prev-<región>.json` y `catalogo-<región>.json`: la previsión y el catálogo publicados que se han usado, para
   comparar el color con el motor real en local (sin tocar la app ni la API).
 - `t139-resumen.json`: tiempos, avisos y concordancia con la previsión publicada.
@@ -202,21 +203,20 @@ def main():
             if sid not in tr or sid not in prev['spots']:
                 continue
             p, x, ray = prev['spots'][sid], tr[sid], rayos[sid]
-            col = {k: [] for k in ('hsE', 'tm', 'k', 'wexp', 'hsTot', 'ww', 'sw1', 'sw2')}
+            col = {k: [] for k in ('hsE', 'tm', 'k', 'wexp', 'tot', 'ww', 'sw1', 'sw2')}
             for n, c in enumerate(claves):
                 fila = x['h'].get(c)
                 wind, wdir = p.get('wind', [None] * len(claves))[n], p.get('wdir', [None] * len(claves))[n]
                 col['wexp'].append(None if wdir is None else int(T.viento_cuenta(ray, wdir)))
                 if not fila or not fila.get('tot'):
-                    for k in ('hsE', 'tm', 'k', 'hsTot', 'ww', 'sw1', 'sw2'):
+                    for k in ('hsE', 'tm', 'k', 'tot', 'ww', 'sw1', 'sw2'):
                         col[k].append(None)
                     continue
                 h, tm, _ = T.entrada(ray, {k: fila.get(k) for k in ('ww', 'sw1', 'sw2')}, (wind, wdir))
                 col['hsE'].append(round(h, 2))
                 col['tm'].append(tm)
                 col['k'].append(round(T.factor_periodo(tm, barco.get(sid, False)), 3))
-                col['hsTot'].append(fila['tot'][0])
-                for k in ('ww', 'sw1', 'sw2'):
+                for k in ('tot', 'ww', 'sw1', 'sw2'):
                     col[k].append(fila.get(k))
                 hp = p.get('hs', [None] * len(claves))[n]
                 if hp is not None and fila['tot'][0] is not None and c >= ahora.strftime('%Y-%m-%dT%H:00'):
