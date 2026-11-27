@@ -13,7 +13,8 @@ un lado y mar de fondo de otro, la dirección media no es la de ninguno de los d
    rayos con camino abierto, repartida con la dispersión direccional del tipo de mar (el abanico de dirección):
    D(θ) ∝ cos^(2s)((θ − θ0)/2) (Mitsuyasu et al. 1975; Goda 2000, s_max: 10 para el mar de viento, 25 para el mar de
    fondo de periodo corto y 75 para el mar de fondo largo y lejano). Altura en el spot = altura del tren × √(fracción),
-   nunca menos de SUELO (el «abrigado» de hoy, por la refracción que el rayo recto no ve).
+   nunca menos de SUELO (el «abrigado» de hoy, por la refracción que el rayo recto no ve). Los rayos solo ven tierra:
+   lo que hoy abriga el arrecife (`reefOpen`, T126 opción D) se aplica igual a cada tren, al 60 %.
 3. El mar de viento es el mayor de dos: el del modelo que entra por los rayos abiertos y el que el viento de la
    previsión forma sobre el agua que hay delante (fetch de la dirección del viento, media de ±15°; SPM 1984, como T126).
 4. El mar en la entrada es la suma de energías de los tres: √(Hw² + H1² + H2²).
@@ -102,14 +103,39 @@ def fraccion(rayo, deg, s):
     return sum(w[k + 18] for k in range(-18, 19) if rayo['s'][(i + k) % N_RAYOS] == '1')
 
 
+def distancia_sector(d, sector):
+    """Distancia angular (°) de una dirección al sector [desde, hasta]; 0 si está dentro (synthesis.ts)."""
+    desde, hasta = sector
+    if hasta - desde >= 360:
+        return 0
+    n = lambda a: a % 360  # noqa: E731
+    ancho = n(hasta - desde)
+    if n(d - desde) <= ancho:
+        return 0
+    return min(n(desde - d), n(d - n(desde + ancho)))
+
+
+SIN_ARRECIFE = object()
+ARRECIFE = 0.6  # el «algo expuesto» del motor de hoy para lo que solo abriga el arrecife (T126, opción D)
+
+
+def factor_arrecife(d, sector, arrecife):
+    """Como el motor de hoy (T126, opción D): una dirección dentro del sector que solo abriga el arrecife (fuera de
+    `reefOpen`, o todo el sector con `reefOpen: null`) llega al 60 %. Los rayos solo ven la tierra, no los arrecifes."""
+    if arrecife is SIN_ARRECIFE or sector is None or distancia_sector(d, sector) > 0:
+        return 1.0
+    return ARRECIFE if arrecife is None or distancia_sector(d, arrecife) > 0 else 1.0
+
+
 def viento_cuenta(rayo, wdir):
     """¿Cuenta el viento? Sí si sobre el agua de su dirección se forma mar de 0,25 m con 40 km/h (T126)."""
     return hm0_viento(VIENTO_REF, fetch_dir(rayo, wdir)) >= MAR_REF
 
 
-def entrada(rayo, trenes, viento=None, total=None):
+def entrada(rayo, trenes, viento=None, total=None, sector=None, arrecife=SIN_ARRECIFE):
     """Mar en la entrada. `trenes`: {'ww': (hs, dir, tm), 'sw1': ..., 'sw2': ...} (cualquiera puede faltar o ser None).
-    `viento`: (km/h, dirección) de la previsión. `total`: altura del oleaje total (VHM0) en la celda.
+    `viento`: (km/h, dirección) de la previsión. `total`: altura del oleaje total (VHM0) en la celda. `sector` y
+    `arrecife`: `open` y `reefOpen` del catálogo (sin `reefOpen`, SIN_ARRECIFE).
     Devuelve (altura en m, periodo medio del tren dominante o None, detalle {tren: [altura en la entrada, periodo]}; el
     mar de viento formado delante sale como 'local').
 
@@ -124,7 +150,7 @@ def entrada(rayo, trenes, viento=None, total=None):
     escala = total / suma if total and suma > 0 else 1.0
     det = {}
     for k, (hs, d, tm) in crudos.items():
-        det[k] = [hs * escala * max(SUELO, math.sqrt(fraccion(rayo, d, s_de(k, tm)))), tm]
+        det[k] = [hs * escala * max(SUELO, math.sqrt(fraccion(rayo, d, s_de(k, tm)))) * factor_arrecife(d, sector, arrecife), tm]
     if viento and viento[0] is not None and viento[1] is not None:
         tope = crudos['ww'][0] * escala if 'ww' in crudos else 0.0
         local = min(hm0_viento(viento[0], fetch_dir(rayo, viento[1])), tope)
