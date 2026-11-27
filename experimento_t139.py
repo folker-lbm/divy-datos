@@ -4,14 +4,16 @@ T139, fase en sombra: oleaje por trenes con la exposición de T126, calculado si
 Para cada spot con rayos de T126 (datos/t139-rayos.json.gz):
 1. Descarga las particiones del oleaje de Copernicus (mar de viento y dos mares de fondo, con altura, dirección y
    periodo medio) en la MISMA celda de mar y con la MISMA prioridad de modelos que la previsión (MEDSEA > IBI >
-   regional > global, celda a 10 km o menos; pipeline.py).
+   regional > global, celda a 10 km o menos; pipeline.py). Donde la previsión publicada usa otro modelo u otra celda
+   (CARICOOS en Puerto Rico y las Islas Vírgenes), no se aplican los trenes.
 2. Lee la previsión publicada de producción de su región (GET /api/prevision/<región>, la que ve la app) para tener el
    viento de cada hora y comparar.
 3. Calcula con trenes.py el mar en la entrada, el periodo del tren dominante y si cuenta el viento.
 
 Escribe en salida/ (artefacto del flujo «Experimento», nunca en KV):
-- `sombra-<región>.json`: por spot y hora (las horas de la previsión publicada): `hsE` (mar en la entrada), `tm`
-  (periodo medio del tren dominante), `k` (factor del periodo en la entrada desde costa), `wexp` (1 si cuenta el viento),
+- `sombra-<región>.json`: por spot y hora (las horas de la previsión publicada): `hsE` (mar en la entrada), `fE` (el
+  mismo como factor sobre el total, lo que publicaría el proceso), `tm` (periodo medio del tren dominante), `k` (factor
+  por el que se divide el umbral en la entrada desde costa), `wexp` (1 si cuenta el viento),
   `tot` (oleaje total de la misma descarga: altura, dirección y periodo de pico, para comprobar que es la misma pasada
   del modelo y comparar con el motor de hoy sobre los mismos datos) y los trenes en la celda.
 - `prev-<región>.json` y `catalogo-<región>.json`: la previsión y el catálogo publicados que se han usado, para
@@ -197,23 +199,27 @@ def main():
         desde = datetime.fromisoformat(w['from'].replace('Z', '+00:00'))
         claves = [(desde + timedelta(hours=i)).strftime('%Y-%m-%dT%H:00') for i in range(w['hours'])]
         barco = {s['id']: s.get('entry', {}).get('label') == 'Barco' for s in cats[r]['spots']}
-        out, dif = {}, []
+        out, dif, otra_fuente = {}, [], []
         for s in cats[r]['spots']:
             sid = s['id']
             if sid not in tr or sid not in prev['spots']:
                 continue
             p, x, ray = prev['spots'][sid], tr[sid], rayos[sid]
-            col = {k: [] for k in ('hsE', 'tm', 'k', 'wexp', 'tot', 'ww', 'sw1', 'sw2')}
+            if not T.misma_fuente(x['tag'], x['km'], p.get('seaCellKm')):
+                otra_fuente.append(sid)  # la previsión usa otro modelo u otra celda (CARICOOS): sin trenes
+                continue
+            col = {k: [] for k in ('hsE', 'fE', 'tm', 'k', 'wexp', 'tot', 'ww', 'sw1', 'sw2')}
             for n, c in enumerate(claves):
                 fila = x['h'].get(c)
                 wind, wdir = p.get('wind', [None] * len(claves))[n], p.get('wdir', [None] * len(claves))[n]
                 col['wexp'].append(None if wdir is None else int(T.viento_cuenta(ray, wdir)))
                 if not fila or not fila.get('tot'):
-                    for k in ('hsE', 'tm', 'k', 'tot', 'ww', 'sw1', 'sw2'):
+                    for k in ('hsE', 'fE', 'tm', 'k', 'tot', 'ww', 'sw1', 'sw2'):
                         col[k].append(None)
                     continue
-                h, tm, _ = T.entrada(ray, {k: fila.get(k) for k in ('ww', 'sw1', 'sw2')}, (wind, wdir), fila['tot'][0], s['open'], s.get('reefOpen', T.SIN_ARRECIFE))
+                h, tm, _ = T.entrada(ray, {k: fila.get(k) for k in ('ww', 'sw1', 'sw2')}, (wind, wdir), fila['tot'][0], s['open'], s.get('reefOpen', T.SIN_ARRECIFE), barco.get(sid, False))
                 col['hsE'].append(round(h, 2))
+                col['fE'].append(round(h / fila['tot'][0], 3) if fila['tot'][0] else None)
                 col['tm'].append(tm)
                 col['k'].append(round(T.factor_periodo(tm, barco.get(sid, False)), 3))
                 for k in ('tot', 'ww', 'sw1', 'sw2'):
@@ -225,7 +231,7 @@ def main():
         (OUT / f'sombra-{r}.json').write_text(json.dumps({'region': r, 'generatedAt': resumen['generatedAt'], 'prevGeneratedAt': prev['generatedAt'], 'window': w, 'spots': out}, separators=(',', ':')))
         dif.sort()
         resumen['regiones'][r] = {
-            'spots': len(cats[r]['spots']), 'conTrenes': len(out), 'prevGeneratedAt': prev['generatedAt'], 'copernicusAt': prev.get('copernicusAt'),
+            'spots': len(cats[r]['spots']), 'conTrenes': len(out), 'otraFuente': otra_fuente, 'prevGeneratedAt': prev['generatedAt'], 'copernicusAt': prev.get('copernicusAt'),
             'horasComparadas': len(dif), 'difHsMediana': dif[len(dif) // 2] if dif else None,
             'difHsP90': dif[int(len(dif) * 0.9)] if dif else None, 'igualA5cm': round(sum(d <= 0.05 for d in dif) / len(dif), 3) if dif else None,
         }

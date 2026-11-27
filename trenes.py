@@ -2,27 +2,33 @@
 T139 (en sombra): oleaje por trenes con la exposición de T126. No lo usa la previsión publicada; lo usa
 experimento_t139.py, que lo calcula y lo guarda aparte para compararlo con lo actual.
 
-Hoy el motor toma el oleaje TOTAL de Copernicus (altura, dirección media y periodo de pico) y lo multiplica por 1, 0,6
-o 0,25 según la dirección media caiga dentro del sector abierto del spot, a menos de 30° o fuera. Con mar de viento de
-un lado y mar de fondo de otro, la dirección media no es la de ninguno de los dos. Aquí:
+Hoy el motor toma el oleaje TOTAL (altura, dirección media y periodo de pico) y lo multiplica por 1, 0,6 o 0,25 según la
+dirección media caiga dentro del sector abierto del spot, a menos de 30° o fuera (y 0,6 con lo que solo abriga el
+arrecife). Con mar de viento de un lado y mar de fondo de otro, la dirección media no es la de ninguno. Aquí:
 
 1. Cada tren por separado: mar de viento (`VHM0_WW`, `VMDR_WW`, `VTM01_WW`) y los dos mares de fondo (`_SW1`, `_SW2`),
-   cada uno con su altura, su dirección (de dónde viene) y su periodo medio, en la misma celda de mar que usa la previsión.
+   cada uno con su altura, su dirección (de dónde viene) y su periodo medio, en la misma celda de mar de Copernicus que
+   usa la previsión. La energía que las particiones no recogen se reparte entre ellas en proporción a la suya.
 2. La exposición de T126, rayo a rayo (72 rayos de 30 km cada 5°; `s`, camino de mar de fondo con difracción por
    Fresnel 8; `f`, km de agua; docs/T126-METODO.md). Un tren llega al spot con la fracción de su energía que viene por
-   rayos con camino abierto, repartida con la dispersión direccional del tipo de mar (el abanico de dirección):
-   D(θ) ∝ cos^(2s)((θ − θ0)/2) (Mitsuyasu et al. 1975; Goda 2000, s_max: 10 para el mar de viento, 25 para el mar de
-   fondo de periodo corto y 75 para el mar de fondo largo y lejano). Altura en el spot = altura del tren × √(fracción),
-   nunca menos de SUELO (el «abrigado» de hoy, por la refracción que el rayo recto no ve). Los rayos solo ven tierra:
-   lo que hoy abriga el arrecife (`reefOpen`, T126 opción D) se aplica igual a cada tren, al 60 %.
-3. El mar de viento es el mayor de dos: el del modelo que entra por los rayos abiertos y el que el viento de la
-   previsión forma sobre el agua que hay delante (fetch de la dirección del viento, media de ±15°; SPM 1984, como T126).
-4. El mar en la entrada es la suma de energías de los tres: √(Hw² + H1² + H2²).
-5. Entradas desde costa: el periodo largo baja el umbral. A igual altura, el flujo de energía en aguas profundas crece
-   con el periodo (P ∝ H²·T), así que la altura equivalente a la de un mar de T_REF es H·√(T/T_REF), solo hacia arriba
-   y con tope K_MAX. Se usa el periodo medio del tren que más energía mete en la entrada. En barco, sin cambio.
+   rayos con camino abierto, repartida con la dispersión direccional de su tipo de mar (el abanico):
+   D(θ) ∝ cos^(2s)((θ − θ0)/2). Los s_max de Goda (2000) son 10 (mar de viento), 25 (mar de fondo corto) y 75 (largo),
+   pero valen en la frecuencia de pico; el tren entero (una partición) está más abierto porque s cae lejos del pico
+   (Mitsuyasu et al. 1975). Integrado en frecuencia, la misma energía fuera de ±30° la da un s de 5, 12 y 28
+   (revisión independiente del 27 nov), y eso es lo que se usa. Con T139_ABANICO=pico, los s_max tal cual.
+   Altura en el spot = altura del tren × √(fracción) × arrecife, nunca menos de SUELO.
+3. El mar de viento es el mayor de dos: el del modelo que entra por los rayos y el que el viento de la previsión forma
+   sobre el agua que hay delante (fetch de su dirección, media de ±15°; SPM 1984, como T126), sin pasar del del modelo.
+4. El mar en la entrada es la suma de energías de los tres: √(Hw² + H1² + H2²). Se publica como factor sobre el total.
+5. Entradas desde costa: el periodo largo baja el umbral (no cambia la altura que se enseña). La altura de rotura crece
+   como H0^0,8 · T^0,4 (Komar y Gaughan 1972), así que a igual altura en mar abierto un mar de periodo T rompe como uno
+   de T_REF con la altura multiplicada por (T/T_REF)^0,4 ≈ √(T/T_REF); el umbral se divide por √(T/T_REF), solo hacia
+   abajo y con tope K_MAX. T es el periodo medio (Tm01) del tren que más energía mete; T_REF = 8 s de Tm01 son unos
+   10 s de periodo de pico. En barco, sin cambio.
 6. Viento y rachas cuentan si el viento sopla desde una dirección con agua suficiente para formar mar de 0,25 m con
    40 km/h (el criterio con el que T126 da una dirección por abrigada del viento), en lugar de «dentro del sector».
+7. Barco (propuesta para decidir): con el oleaje total por encima del umbral difícil de barco, el mar en la entrada no
+   baja del umbral bueno de barco, porque la travesía hasta el punto abrigado también cuenta (Berlengas con 3 m).
 """
 import gzip
 import json
@@ -33,18 +39,26 @@ from pathlib import Path
 G = 9.81
 PASO = 5  # grados entre rayos (T126)
 N_RAYOS = 72
-S_VIENTO, S_FONDO_CORTO, S_FONDO_LARGO = 10, 25, 75  # Goda 2000: s_max por tipo de mar
-T_FONDO_LARGO = 10.0  # s (periodo medio): desde aquí, mar de fondo largo y lejano (s_max 75)
-T_REF = 8.0  # s (periodo medio): referencia del umbral de mar de la entrada desde costa
+if os.environ.get('T139_ABANICO') == 'pico':
+    S_VIENTO, S_FONDO_CORTO, S_FONDO_LARGO = 10, 25, 75  # Goda 2000: s_max en la frecuencia de pico
+else:
+    S_VIENTO, S_FONDO_CORTO, S_FONDO_LARGO = 5, 12, 28  # el mismo abanico integrado en frecuencia
+T_FONDO_LARGO = 10.0  # s (periodo medio): desde aquí, mar de fondo largo (aproximación; Goda usa el peralte)
+T_REF = 8.0  # s (periodo medio, unos 10 s de pico): referencia del umbral de mar de la entrada desde costa
 K_MAX = 1.5  # tope del factor del periodo (el umbral de 0,5 m nunca baja de 0,33 m)
 VIENTO_REF, MAR_REF = 40.0, 0.25  # km/h y m: criterio de T126 para que el viento cuente
 # Suelo de la altura de cada tren en la entrada: el «abrigado» del motor de hoy (0,25). El rayo recto no ve la
 # refracción ni las reflexiones, que meten mar de fondo detrás de las puntas (Honolua Bay con el mar del norte, prueba del
 # 27 nov); con el suelo, ningún tren llega más flojo de lo que hoy llega el oleaje a un spot abrigado.
 SUELO = float(os.environ.get('T139_SUELO', 0.25))
+ARRECIFE = 0.6  # el «algo expuesto» del motor de hoy para lo que solo abriga el arrecife (T126, opción D)
+BARCO_DIFICIL, BARCO_BUENO = 1.5, 0.8  # umbrales de mar de barco del motor (thresholdsFor)
+TOPE_BARCO = os.environ.get('T139_TOPE_BARCO', '1') != '0'
 RAYOS = Path(__file__).resolve().parent / 'datos' / 't139-rayos.json.gz'
-# Spots que no usan los trenes (siguen con el sector): en tierra de OSM o con la coordenada redondeada (prueba del 27 nov).
+# Spots que no usan los trenes (siguen con el sector): en tierra de OSM, con la posición aproximada o movida más de
+# 0,5 km, o con la coordenada redondeada (prueba y revisión del 27 nov).
 EXCLUIDOS = Path(__file__).resolve().parent / 'datos' / 't139-excluidos.json'
+SIN_ARRECIFE = object()
 
 
 def ua(u):
@@ -79,7 +93,7 @@ def fetch_dir(rayo, deg):
 
 
 def s_de(tipo, tm):
-    """Dispersión del tren: s_max de Goda según el tipo de mar."""
+    """Dispersión del tren según el tipo de mar."""
     if tipo == 'ww':
         return S_VIENTO
     return S_FONDO_LARGO if tm is not None and tm >= T_FONDO_LARGO else S_FONDO_CORTO
@@ -115,10 +129,6 @@ def distancia_sector(d, sector):
     return min(n(desde - d), n(d - n(desde + ancho)))
 
 
-SIN_ARRECIFE = object()
-ARRECIFE = 0.6  # el «algo expuesto» del motor de hoy para lo que solo abriga el arrecife (T126, opción D)
-
-
 def factor_arrecife(d, sector, arrecife):
     """Como el motor de hoy (T126, opción D): una dirección dentro del sector que solo abriga el arrecife (fuera de
     `reefOpen`, o todo el sector con `reefOpen: null`) llega al 60 %. Los rayos solo ven la tierra, no los arrecifes."""
@@ -132,25 +142,27 @@ def viento_cuenta(rayo, wdir):
     return hm0_viento(VIENTO_REF, fetch_dir(rayo, wdir)) >= MAR_REF
 
 
-def entrada(rayo, trenes, viento=None, total=None, sector=None, arrecife=SIN_ARRECIFE):
+def entrada(rayo, trenes, viento=None, total=None, sector=None, arrecife=SIN_ARRECIFE, barco=False):
     """Mar en la entrada. `trenes`: {'ww': (hs, dir, tm), 'sw1': ..., 'sw2': ...} (cualquiera puede faltar o ser None).
     `viento`: (km/h, dirección) de la previsión. `total`: altura del oleaje total (VHM0) en la celda. `sector` y
-    `arrecife`: `open` y `reefOpen` del catálogo (sin `reefOpen`, SIN_ARRECIFE).
+    `arrecife`: `open` y `reefOpen` del catálogo (sin `reefOpen`, SIN_ARRECIFE). `barco`: entrada en barco.
     Devuelve (altura en m, periodo medio del tren dominante o None, detalle {tren: [altura en la entrada, periodo]}; el
     mar de viento formado delante sale como 'local').
 
-    Dos correcciones de la prueba del 27 nov:
+    Correcciones de la prueba y de la revisión del 27 nov:
     - Las particiones no siempre suman toda la energía del total (en el global, la mediana es el 96 % de la altura y el
       10 % peor, el 86 %). La que falta se reparte entre los trenes en proporción a la suya, para que un spot abierto a
       todo reciba el total, como hoy, y no salga más verde solo por eso.
     - El mar de viento que se forma delante no puede ser mayor que el del modelo en la celda de mar abierto (el SPM no
-      limita por duración; con fetch de 30 km daba más que el modelo)."""
+      limita por duración; con fetch de 30 km daba más que el modelo).
+    - El suelo va después del arrecife: ningún tren llega por debajo del 25 %, como hoy un spot abrigado."""
     crudos = {k: t for k in ('ww', 'sw1', 'sw2') if (t := trenes.get(k)) and t[0] is not None and t[1] is not None and t[0] > 0}
     suma = math.sqrt(sum(t[0] ** 2 for t in crudos.values()))
     escala = total / suma if total and suma > 0 else 1.0
     det = {}
     for k, (hs, d, tm) in crudos.items():
-        det[k] = [hs * escala * max(SUELO, math.sqrt(fraccion(rayo, d, s_de(k, tm)))) * factor_arrecife(d, sector, arrecife), tm]
+        f = math.sqrt(fraccion(rayo, d, s_de(k, tm))) * factor_arrecife(d, sector, arrecife)
+        det[k] = [hs * escala * max(SUELO, f), tm]
     if viento and viento[0] is not None and viento[1] is not None:
         tope = crudos['ww'][0] * escala if 'ww' in crudos else 0.0
         local = min(hm0_viento(viento[0], fetch_dir(rayo, viento[1])), tope)
@@ -159,11 +171,24 @@ def entrada(rayo, trenes, viento=None, total=None, sector=None, arrecife=SIN_ARR
             det['local'] = [local, None]  # sin periodo: el mar corto que se forma delante no baja el umbral
     h = math.sqrt(sum(v[0] ** 2 for v in det.values()))
     dom = max(det.values(), key=lambda v: v[0]) if det else None
+    if barco and TOPE_BARCO and total is not None and total > BARCO_DIFICIL:
+        h = max(h, BARCO_BUENO)
     return h, (dom[1] if dom else None), det
 
 
 def factor_periodo(tm, barco):
-    """Factor por el que se multiplica la altura de la entrada desde costa (equivale a dividir el umbral por él)."""
+    """Factor por el que se divide el umbral de mar de la entrada desde costa (1 si no cambia)."""
     if barco or tm is None or tm <= T_REF:
         return 1.0
     return min(K_MAX, math.sqrt(tm / T_REF))
+
+
+def misma_fuente(sombra_tag, sombra_km, celdas_publicadas):
+    """¿Viene el oleaje publicado de la misma celda de Copernicus que la sombra? `celdas_publicadas`: `seaCellKm` de la
+    previsión. La previsión usa el primero de MEDSEA, IBI, regional (también CARICOOS) y global que tenga celda a 10 km
+    o menos; si es otro modelo, u otra celda, los trenes no se aplican (CARICOOS en Puerto Rico y las Islas Vírgenes)."""
+    for tag in ('med', 'ibi', 'reg', 'glo'):
+        km = (celdas_publicadas or {}).get('wav' + tag.capitalize())
+        if km is not None and km <= 10:
+            return tag == sombra_tag and abs(km - sombra_km) <= 0.15
+    return False
